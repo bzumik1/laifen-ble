@@ -95,9 +95,9 @@ def _signed(value: int) -> int:
     return value - 0x100 if value > 0x7F else value
 
 
-def decode_version(payload: bytes) -> str:
+def decode_version(payload: bytes) -> str | None:
     if len(payload) != VERSION_LENGTH:
-        return payload.hex()
+        return None
     parts = [
         chr(byte) if index == VERSION_LETTER_INDEX else str(_signed(byte))
         for index, byte in enumerate(payload)

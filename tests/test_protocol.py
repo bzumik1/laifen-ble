@@ -18,6 +18,11 @@ from laifen_ble.protocol import (
 STATE_FRAME = bytes.fromhex("aa0a021400010a070a0a0a040a0a140101005d010078010085")
 VERSION_FRAME = bytes.fromhex("aa010209020008590404030003f3")
 ACK_FRAME = bytes.fromhex("aa05020100ac")
+STATE_21_FRAME = bytes.fromhex("aa0a0215020205050406060a0a0a140a0a004f00012c000000cf")
+STATE_21_RUNNING_FRAME = bytes.fromhex(
+    "aa0a0215020205050406060a0a0a140a0a004f00012c000100ce"
+)
+VERSION_19_FRAME = bytes.fromhex("aa01021302000903585858540001420000590404030003a4")
 
 
 def test_checksum() -> None:
@@ -117,5 +122,26 @@ def test_decode_version_signed_bytes() -> None:
     assert decode_version(bytes.fromhex("ff0008590404030003")) == "V-1.0.8.Y44.303"
 
 
-def test_decode_version_unknown_length() -> None:
-    assert decode_version(bytes.fromhex("0102")) == "0102"
+def test_decode_version_unknown_format() -> None:
+    assert decode_version(decode_frame(VERSION_19_FRAME).payload) is None
+
+
+def test_decode_state_21_byte_payload() -> None:
+    state = decode_state(decode_frame(STATE_21_FRAME).payload)
+    assert state.mode is Mode.MODE_3
+    assert state.mode_settings == {
+        Mode.MODE_1: ModeSettings(strength=2, range=5, speed=5),
+        Mode.MODE_2: ModeSettings(strength=4, range=6, speed=6),
+        Mode.MODE_3: ModeSettings(strength=10, range=10, speed=10),
+        Mode.HIGH_FREQUENCY: ModeSettings(strength=20, range=10, speed=10),
+    }
+    assert state.airplane_mode is False
+    assert state.battery_level == 79
+    assert state.reminder_30s is False
+    assert state.brushing_time == 300
+    assert state.high_frequency is False
+    assert state.running is False
+
+
+def test_decode_state_21_byte_payload_running() -> None:
+    assert decode_state(decode_frame(STATE_21_RUNNING_FRAME).payload).running is True
