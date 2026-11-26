@@ -55,9 +55,16 @@ the toothbrush stays awake on its charger.
 
 A brushing session is a period in which the motor runs for at least five seconds; the short
 vibrations that confirm button presses are ignored. `last_session` holds the start time and
-duration of the last completed session. When the connection drops while the motor runs, the
-session continues if the toothbrush is connected again within a minute and still runs. Otherwise
-the interrupted session is dropped, so a session is never recorded with a wrong duration.
+duration of the last completed session. Sessions are measured while the toothbrush is connected:
+
+- A session that was already running when the toothbrush was connected starts at the moment of
+  the connection.
+- When the connection drops while the motor runs and the toothbrush is connected again within a
+  minute while it still runs, the session continues. If it would then last longer than the
+  longest brushing time, the toothbrush must have been stopped and started again in between, and
+  the session starts at the moment of the new connection.
+- When the toothbrush is connected again later, only the rest of the session is recorded. When
+  it has stopped by then, the interrupted session is not recorded.
 
 ## Errors
 
@@ -87,7 +94,7 @@ python -m venv .venv
 . .venv/bin/activate
 pip install -e '.[test,lint]'
 pytest
-ruff check . && ruff format --check . && mypy src
+ruff check . && ruff format --check . && mypy src tests
 ```
 
 ## License

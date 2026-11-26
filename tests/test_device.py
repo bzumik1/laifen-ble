@@ -901,7 +901,7 @@ async def test_session_continues_after_reconnect(
         ),
     ],
 )
-async def test_session_is_not_recorded_after_a_long_gap(
+async def test_rest_of_session_is_recorded_after_a_long_gap(
     toothbrush: LaifenToothbrush,
     client: FakeClient,
     clock: list[float],
@@ -916,15 +916,61 @@ async def test_session_is_not_recorded_after_a_long_gap(
     clock[0] = 300.0
     client.set_running(False)
 
-    assert toothbrush.last_session is None
+    session = toothbrush.last_session
+    assert session is not None
+    assert session.duration == 40
 
+
+async def test_session_after_two_interruptions(
+    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
+) -> None:
     client.set_running(True)
-    clock[0] = 380.0
+    clock[0] = 110.0
+    client.drop()
+    clock[0] = 180.0
+    await toothbrush.connect()
+    clock[0] = 190.0
+    client.drop()
+    clock[0] = 100_000.0
+    await toothbrush.connect()
+    clock[0] = 100_120.0
     client.set_running(False)
 
     session = toothbrush.last_session
     assert session is not None
-    assert session.duration == 80
+    assert session.duration == 120
+
+
+async def test_merged_sessions_are_recorded_from_the_reconnect(
+    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
+) -> None:
+    client.set_running(True)
+    clock[0] = 150.0
+    client.drop()
+    clock[0] = 200.0
+    await toothbrush.connect()
+    clock[0] = 500.0
+    client.set_running(False)
+
+    session = toothbrush.last_session
+    assert session is not None
+    assert session.duration == 300
+
+
+async def test_session_is_not_continued_beyond_the_brushing_time(
+    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
+) -> None:
+    client.set_running(True)
+    clock[0] = 390.0
+    client.drop()
+    clock[0] = 420.0
+    await toothbrush.connect()
+    clock[0] = 450.0
+    client.set_running(False)
+
+    session = toothbrush.last_session
+    assert session is not None
+    assert session.duration == 30
 
 
 async def test_new_session_after_an_unseen_stop(

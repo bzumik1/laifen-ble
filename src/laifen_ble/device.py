@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
 import logging
@@ -53,6 +53,13 @@ from .protocol import (
 _LOGGER = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class _Run:
+    started: float
+    started_at: datetime
+    resumed: tuple[float, datetime] | None = None
+
+
 class LaifenToothbrush:
     def __init__(self, address_or_ble_device: BLEDevice | str) -> None:
         if isinstance(address_or_ble_device, BLEDevice):
@@ -71,9 +78,8 @@ class LaifenToothbrush:
         self._firmware_version_raw: bytes | None = None
         self._acknowledgements: dict[int, asyncio.Future[int]] = {}
         self._state_waiters: list[asyncio.Future[None]] = []
-        self._session_start: tuple[float, datetime] | None = None
-        self._interrupted_session: tuple[tuple[float, datetime], float] | None = None
-        self._awaiting_stop = False
+        self._run: _Run | None = None
+        self._interrupted_run: tuple[_Run, float] | None = None
         self._last_session: BrushingSession | None = None
 
     @property
@@ -420,41 +426,41 @@ class LaifenToothbrush:
 
     def _track_session(self, running: bool) -> None:
         if not running:
-            self._interrupted_session = None
-            self._awaiting_stop = False
+            self._interrupted_run = None
             self._finish_session()
-        elif self._session_start is None and not self._awaiting_stop:
-            self._start_session()
+        elif self._run is None:
+            self._run = self._resumed_run() or _Run(monotonic(), datetime.now(UTC))
 
-    def _start_session(self) -> None:
-        interrupted = self._interrupted_session
-        self._interrupted_session = None
+    def _resumed_run(self) -> _Run | None:
+        interrupted = self._interrupted_run
+        self._interrupted_run = None
+        if interrupted is None:
+            return None
+        run, interrupted_at = interrupted
         now = monotonic()
-        if interrupted is not None:
-            session_start, interrupted_at = interrupted
-            if now - interrupted_at <= MAX_SESSION_GAP:
-                self._session_start = session_start
-                return
-            if now - session_start[0] <= MAX_BRUSHING_TIME + MAX_SESSION_GAP:
-                self._awaiting_stop = True
-                return
-        self._session_start = (now, datetime.now(UTC))
+        if now - interrupted_at > MAX_SESSION_GAP:
+            return None
+        return replace(run, resumed=(now, datetime.now(UTC)))
 
     def _finish_session(self) -> None:
-        if self._session_start is None:
+        run = self._run
+        if run is None:
             return
-        started, started_at = self._session_start
-        self._session_start = None
-        duration = monotonic() - started
+        self._run = None
+        now = monotonic()
+        started, started_at = run.started, run.started_at
+        if run.resumed is not None and now - started > MAX_BRUSHING_TIME:
+            started, started_at = run.resumed
+        duration = now - started
         if duration >= MIN_SESSION_DURATION:
             self._last_session = BrushingSession(
                 started_at=started_at, duration=round(duration)
             )
 
     def _interrupt_session(self) -> None:
-        if self._session_start is not None:
-            self._interrupted_session = (self._session_start, monotonic())
-        self._session_start = None
+        if self._run is not None:
+            self._interrupted_run = (self._run, monotonic())
+        self._run = None
 
     def _notify_callbacks(self) -> None:
         for callback in list(self._callbacks):
