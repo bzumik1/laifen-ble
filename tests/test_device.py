@@ -260,6 +260,105 @@ async def test_connect_link_drops_after_state(
     assert not toothbrush.connected
 
 
+TRANSPORT_ERRORS = [
+    pytest.param(EOFError(), id="eof"),
+    pytest.param(BrokenPipeError(), id="broken_pipe"),
+    pytest.param(AttributeError(), id="attribute"),
+]
+
+
+@pytest.mark.parametrize("error", TRANSPORT_ERRORS)
+async def test_connect_transport_error(
+    ble_device: BLEDevice, client: FakeClient, establish: AsyncMock, error: Exception
+) -> None:
+    client.start_notify.side_effect = error
+    toothbrush = LaifenToothbrush(ble_device)
+
+    with pytest.raises(LaifenConnectionError):
+        await toothbrush.connect()
+
+    assert not toothbrush.connected
+
+
+@pytest.mark.parametrize("error", TRANSPORT_ERRORS)
+@pytest.mark.parametrize(
+    ("method", "args"),
+    [
+        pytest.param("set_reminder_30s", (True,), id="command"),
+        pytest.param("update", (), id="update"),
+    ],
+)
+async def test_operation_transport_error(
+    toothbrush: LaifenToothbrush,
+    client: FakeClient,
+    error: Exception,
+    method: str,
+    args: tuple[Any, ...],
+) -> None:
+    client.write_gatt_char.side_effect = error
+
+    with pytest.raises(LaifenConnectionError):
+        await getattr(toothbrush, method)(*args)
+
+
+@pytest.mark.parametrize("error", TRANSPORT_ERRORS)
+async def test_disconnect_transport_error_is_ignored(
+    toothbrush: LaifenToothbrush, client: FakeClient, error: Exception
+) -> None:
+    client.disconnect.side_effect = error
+
+    await toothbrush.disconnect()
+
+    assert not toothbrush.connected
+
+
+@pytest.mark.parametrize(
+    ("method", "args"),
+    [
+        pytest.param("set_reminder_30s", (True,), id="command"),
+        pytest.param("update", (), id="update"),
+    ],
+)
+async def test_stuck_write_times_out(
+    toothbrush: LaifenToothbrush,
+    client: FakeClient,
+    method: str,
+    args: tuple[Any, ...],
+) -> None:
+    async def never_answer(_uuid: str, data: bytes, response: bool) -> None:
+        await asyncio.Event().wait()
+
+    client.write_gatt_char.side_effect = never_answer
+
+    with pytest.raises(LaifenConnectionError):
+        async with asyncio.timeout(1):
+            await getattr(toothbrush, method)(*args)
+
+
+async def test_failed_connect_does_not_keep_a_session(
+    ble_device: BLEDevice, client: FakeClient, establish: AsyncMock
+) -> None:
+    async def answer_then_drop(_uuid: str, data: bytes, response: bool) -> None:
+        if data == READ_STATE:
+            client.notify_state()
+            client.drop()
+
+    client.payload[19] = 0x01
+    client.write_gatt_char.side_effect = answer_then_drop
+    toothbrush = LaifenToothbrush(ble_device)
+
+    with patch("laifen_ble.device.monotonic", side_effect=[100.0, 3700.0]):
+        with pytest.raises(LaifenConnectionError):
+            await toothbrush.connect()
+
+        client.payload[19] = 0x00
+        client.write_gatt_char.side_effect = client._write
+        await toothbrush.connect()
+
+    assert toothbrush.connected
+    assert toothbrush.last_session is None
+
+
 async def test_unsupported_state_while_connected(
     toothbrush: LaifenToothbrush, client: FakeClient
 ) -> None:

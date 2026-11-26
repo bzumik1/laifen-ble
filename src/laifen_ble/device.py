@@ -10,8 +10,11 @@ from typing import Any
 
 from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
-from bleak.exc import BleakError
-from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
+from bleak_retry_connector import (
+    BLEAK_RETRY_EXCEPTIONS,
+    BleakClientWithServiceCache,
+    establish_connection,
+)
 
 from .const import (
     CHARACTERISTIC_UUID,
@@ -131,8 +134,9 @@ class LaifenToothbrush:
                     raise LaifenConnectionError(f"{self.name} disconnected")
             except BaseException as err:
                 self._pending_client = None
+                self._session_start = None
                 await self._disconnect(client)
-                if isinstance(err, BleakError | TimeoutError):
+                if isinstance(err, BLEAK_RETRY_EXCEPTIONS):
                     raise LaifenConnectionError(
                         f"Failed to read the state of {self.name}: {err}"
                     ) from err
@@ -153,7 +157,7 @@ class LaifenToothbrush:
             client = self._connected_client()
             try:
                 await self._read_state(client, COMMAND_TIMEOUT)
-            except (BleakError, TimeoutError) as err:
+            except BLEAK_RETRY_EXCEPTIONS as err:
                 raise LaifenConnectionError(
                     f"Failed to read the state of {self.name}: {err}"
                 ) from err
@@ -247,7 +251,7 @@ class LaifenToothbrush:
             _LOGGER.debug("%s: The services lack %s", self.name, CHARACTERISTIC_UUID)
             try:
                 await client.clear_cache()
-            except (BleakError, TimeoutError) as err:
+            except BLEAK_RETRY_EXCEPTIONS as err:
                 _LOGGER.debug("%s: Failed to clear the services: %s", self.name, err)
             finally:
                 await self._disconnect(client)
@@ -265,7 +269,7 @@ class LaifenToothbrush:
                 ble_device_callback=lambda: self._ble_device or ble_device,
                 use_services_cache=use_services_cache,
             )
-        except (BleakError, TimeoutError) as err:
+        except BLEAK_RETRY_EXCEPTIONS as err:
             raise LaifenConnectionError(
                 f"Failed to connect to {self.name}: {err}"
             ) from err
@@ -276,8 +280,10 @@ class LaifenToothbrush:
         waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._state_waiters.append(waiter)
         try:
-            await client.write_gatt_char(CHARACTERISTIC_UUID, READ_STATE, response=True)
             async with asyncio.timeout(max_wait):
+                await client.write_gatt_char(
+                    CHARACTERISTIC_UUID, READ_STATE, response=True
+                )
                 await waiter
         finally:
             self._state_waiters.remove(waiter)
@@ -291,13 +297,13 @@ class LaifenToothbrush:
         )
         self._acknowledgements[command] = acknowledgement
         try:
-            await client.write_gatt_char(CHARACTERISTIC_UUID, frame, response=True)
             async with asyncio.timeout(COMMAND_TIMEOUT):
+                await client.write_gatt_char(CHARACTERISTIC_UUID, frame, response=True)
                 status = await acknowledgement
             if status != ACCEPTED:
                 raise LaifenCommandError(command, status)
             await self._read_state(client, COMMAND_TIMEOUT)
-        except (BleakError, TimeoutError) as err:
+        except BLEAK_RETRY_EXCEPTIONS as err:
             raise LaifenConnectionError(
                 f"Failed to send a command to {self.name}: {err}"
             ) from err
@@ -316,7 +322,7 @@ class LaifenToothbrush:
     async def _disconnect(self, client: BleakClientWithServiceCache) -> None:
         try:
             await client.disconnect()
-        except (BleakError, TimeoutError) as err:
+        except BLEAK_RETRY_EXCEPTIONS as err:
             _LOGGER.debug("%s: Error while disconnecting: %s", self.name, err)
 
     def _handle_disconnect(self, client: BleakClientWithServiceCache) -> None:
