@@ -120,7 +120,7 @@ def test_decode_state_unsupported_length() -> None:
 def test_decode_state_unknown_mode() -> None:
     payload = bytearray(decode_frame(STATE_FRAME).payload)
     payload[0] = 0x04
-    with pytest.raises(InvalidFrameError):
+    with pytest.raises(UnsupportedStateError):
         decode_state(bytes(payload))
 
 
@@ -232,7 +232,7 @@ def test_strength_limits() -> None:
 def test_decode_state_battery_out_of_range() -> None:
     payload = bytearray(decode_frame(STATE_FRAME).payload)
     payload[14] = 0xFF
-    with pytest.raises(InvalidFrameError):
+    with pytest.raises(UnsupportedStateError):
         decode_state(bytes(payload))
 
 

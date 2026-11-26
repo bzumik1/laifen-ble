@@ -19,6 +19,7 @@ from bleak_retry_connector import (
 from .const import (
     CHARACTERISTIC_UUID,
     COMMAND_TIMEOUT,
+    MAX_SESSION_GAP,
     MIN_SESSION_DURATION,
     STATE_TIMEOUT,
 )
@@ -69,6 +70,7 @@ class LaifenToothbrush:
         self._acknowledgements: dict[int, asyncio.Future[int]] = {}
         self._state_waiters: list[asyncio.Future[None]] = []
         self._session_start: tuple[float, datetime] | None = None
+        self._interrupted_session: tuple[tuple[float, datetime], float] | None = None
         self._last_session: BrushingSession | None = None
 
     @property
@@ -120,6 +122,9 @@ class LaifenToothbrush:
             ble_device = self._ble_device
             if ble_device is None:
                 raise LaifenConnectionError(f"{self.name} has not been seen yet")
+            if self._client is not None:
+                await self._disconnect_client()
+                self._notify_callbacks()
             client = await self._open(ble_device)
             self._pending_client = client
             try:
@@ -135,7 +140,7 @@ class LaifenToothbrush:
                     raise LaifenConnectionError(f"{self.name} disconnected")
             except BaseException as err:
                 self._pending_client = None
-                self._session_start = None
+                self._interrupt_session()
                 await self._disconnect(client)
                 if isinstance(err, BLEAK_RETRY_EXCEPTIONS):
                     raise LaifenConnectionError(
@@ -247,7 +252,14 @@ class LaifenToothbrush:
     async def _open(self, ble_device: BLEDevice) -> BleakClientWithServiceCache:
         for use_services_cache in (True, False):
             client = await self._establish_connection(ble_device, use_services_cache)
-            if client.services.get_characteristic(CHARACTERISTIC_UUID) is not None:
+            try:
+                characteristic = client.services.get_characteristic(CHARACTERISTIC_UUID)
+            except BLEAK_RETRY_EXCEPTIONS as err:
+                await self._disconnect(client)
+                raise LaifenConnectionError(
+                    f"Failed to read the services of {self.name}: {err}"
+                ) from err
+            if characteristic is not None:
                 return client
             _LOGGER.debug("%s: The services lack %s", self.name, CHARACTERISTIC_UUID)
             try:
@@ -315,7 +327,7 @@ class LaifenToothbrush:
     async def _disconnect_client(self) -> None:
         client = self._client
         self._client = None
-        self._session_start = None
+        self._interrupt_session()
         self._fail_waiters()
         if client is not None:
             await self._disconnect(client)
@@ -334,7 +346,7 @@ class LaifenToothbrush:
             return
         _LOGGER.debug("%s: Disconnected", self.name)
         self._client = None
-        self._session_start = None
+        self._interrupt_session()
         self._fail_waiters()
         self._notify_callbacks()
 
@@ -401,8 +413,12 @@ class LaifenToothbrush:
     def _track_session(self, running: bool) -> None:
         if running:
             if self._session_start is None:
-                self._session_start = (monotonic(), datetime.now(UTC))
+                self._session_start = self._resumed_session() or (
+                    monotonic(),
+                    datetime.now(UTC),
+                )
             return
+        self._interrupted_session = None
         if self._session_start is None:
             return
         started, started_at = self._session_start
@@ -412,6 +428,21 @@ class LaifenToothbrush:
             self._last_session = BrushingSession(
                 started_at=started_at, duration=round(duration)
             )
+
+    def _interrupt_session(self) -> None:
+        if self._session_start is not None:
+            self._interrupted_session = (self._session_start, monotonic())
+        self._session_start = None
+
+    def _resumed_session(self) -> tuple[float, datetime] | None:
+        interrupted = self._interrupted_session
+        self._interrupted_session = None
+        if interrupted is None:
+            return None
+        session_start, interrupted_at = interrupted
+        if monotonic() - interrupted_at > MAX_SESSION_GAP:
+            return None
+        return session_start
 
     def _notify_callbacks(self) -> None:
         for callback in list(self._callbacks):

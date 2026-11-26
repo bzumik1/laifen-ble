@@ -100,9 +100,9 @@ def decode_state(payload: bytes) -> LaifenState:
     try:
         mode = Mode(payload[0])
     except ValueError as err:
-        raise InvalidFrameError(f"Unknown mode {payload[0]}") from err
+        raise UnsupportedStateError(f"Unknown mode {payload[0]}") from err
     if payload[14] > MAX_BATTERY_LEVEL:
-        raise InvalidFrameError(f"Battery level {payload[14]} out of range")
+        raise UnsupportedStateError(f"Battery level {payload[14]} out of range")
     return LaifenState(
         mode=mode,
         mode_settings=MappingProxyType(

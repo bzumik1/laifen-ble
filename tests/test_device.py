@@ -41,6 +41,7 @@ class FakeClient:
         self.acknowledgement_payload: bytes | None = None
         self.status = 0x00
         self.stale_services = 0
+        self.services_error: Exception | None = None
         self.written: list[bytes] = []
         self.clear_cache = AsyncMock(return_value=True)
         self.notify_callback: Callable[[Any, bytearray], None] | None = None
@@ -51,6 +52,8 @@ class FakeClient:
 
     @property
     def services(self) -> MagicMock:
+        if self.services_error is not None:
+            raise self.services_error
         services = MagicMock()
         if self.stale_services:
             self.stale_services -= 1
@@ -123,6 +126,13 @@ def short_timeouts() -> Generator[None]:
         patch("laifen_ble.device.COMMAND_TIMEOUT", 0.01),
     ):
         yield
+
+
+@pytest.fixture
+def clock() -> Generator[list[float]]:
+    now = [100.0]
+    with patch("laifen_ble.device.monotonic", side_effect=lambda: now[0]):
+        yield now
 
 
 @pytest.fixture
@@ -335,6 +345,51 @@ async def test_stuck_write_times_out(
             await getattr(toothbrush, method)(*args)
 
 
+@pytest.mark.parametrize("error", [BleakError("no services"), AttributeError()])
+async def test_connect_services_unavailable(
+    ble_device: BLEDevice, client: FakeClient, establish: AsyncMock, error: Exception
+) -> None:
+    client.services_error = error
+    toothbrush = LaifenToothbrush(ble_device)
+
+    with pytest.raises(LaifenConnectionError):
+        await toothbrush.connect()
+
+    assert not toothbrush.connected
+    client.disconnect.assert_awaited_once()
+
+
+async def test_late_disconnect_of_previous_client(
+    toothbrush: LaifenToothbrush, client: FakeClient, establish: AsyncMock
+) -> None:
+    callback = MagicMock()
+    toothbrush.register_callback(callback)
+    previous_disconnected_callback = client.disconnected_callback
+    assert previous_disconnected_callback is not None
+    client.is_connected = False
+    new_client = FakeClient()
+
+    async def establish_new_client(*_args: Any, **kwargs: Any) -> FakeClient:
+        new_client.disconnected_callback = kwargs["disconnected_callback"]
+        return new_client
+
+    async def report_previous_disconnect(
+        uuid: str, data: bytes, response: bool
+    ) -> None:
+        if data == READ_STATE:
+            previous_disconnected_callback(client)
+        await new_client._write(uuid, data, response)
+
+    establish.side_effect = establish_new_client
+    new_client.write_gatt_char.side_effect = report_previous_disconnect
+
+    await toothbrush.connect()
+
+    assert toothbrush.connected
+    client.disconnect.assert_awaited_once()
+    assert callback.call_count >= 2
+
+
 async def test_stuck_notify_times_out(
     ble_device: BLEDevice, client: FakeClient, establish: AsyncMock
 ) -> None:
@@ -355,7 +410,7 @@ async def test_stuck_notify_times_out(
 
 
 async def test_failed_connect_does_not_keep_a_session(
-    ble_device: BLEDevice, client: FakeClient, establish: AsyncMock
+    ble_device: BLEDevice, client: FakeClient, establish: AsyncMock, clock: list[float]
 ) -> None:
     async def answer_then_drop(_uuid: str, data: bytes, response: bool) -> None:
         if data == READ_STATE:
@@ -366,13 +421,13 @@ async def test_failed_connect_does_not_keep_a_session(
     client.write_gatt_char.side_effect = answer_then_drop
     toothbrush = LaifenToothbrush(ble_device)
 
-    with patch("laifen_ble.device.monotonic", side_effect=[100.0, 3700.0]):
-        with pytest.raises(LaifenConnectionError):
-            await toothbrush.connect()
-
-        client.payload[19] = 0x00
-        client.write_gatt_char.side_effect = client._write
+    with pytest.raises(LaifenConnectionError):
         await toothbrush.connect()
+
+    clock[0] = 3700.0
+    client.payload[19] = 0x00
+    client.write_gatt_char.side_effect = client._write
+    await toothbrush.connect()
 
     assert toothbrush.connected
     assert toothbrush.last_session is None
@@ -722,12 +777,12 @@ async def test_duplicate_acknowledgement(
 
 
 async def test_brushing_session(
-    toothbrush: LaifenToothbrush, client: FakeClient
+    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
 ) -> None:
-    with patch("laifen_ble.device.monotonic", side_effect=[100.0, 160.4]):
-        client.set_running(True)
-        client.set_running(True)
-        client.set_running(False)
+    client.set_running(True)
+    client.set_running(True)
+    clock[0] = 160.4
+    client.set_running(False)
 
     session = toothbrush.last_session
     assert isinstance(session, BrushingSession)
@@ -737,25 +792,77 @@ async def test_brushing_session(
 
 
 async def test_short_run_is_not_a_session(
-    toothbrush: LaifenToothbrush, client: FakeClient
+    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
 ) -> None:
-    with patch("laifen_ble.device.monotonic", side_effect=[100.0, 101.0]):
-        client.set_running(True)
-        client.set_running(False)
-
-    assert toothbrush.last_session is None
-
-
-async def test_session_is_dropped_on_disconnect(
-    toothbrush: LaifenToothbrush, client: FakeClient
-) -> None:
-    with patch("laifen_ble.device.monotonic", side_effect=[100.0]):
-        client.set_running(True)
-    client.drop()
-    client.is_connected = True
+    client.set_running(True)
+    clock[0] = 101.0
     client.set_running(False)
 
     assert toothbrush.last_session is None
+
+
+async def test_session_is_dropped_when_it_ends_while_disconnected(
+    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
+) -> None:
+    client.set_running(True)
+    clock[0] = 160.0
+    client.drop()
+    clock[0] = 170.0
+    client.payload[19] = 0x00
+    await toothbrush.connect()
+    clock[0] = 220.0
+    client.set_running(True)
+    clock[0] = 280.0
+    client.set_running(False)
+
+    session = toothbrush.last_session
+    assert session is not None
+    assert session.duration == 60
+
+
+@pytest.mark.parametrize(
+    "interrupt",
+    [
+        pytest.param(lambda toothbrush, client: client.drop(), id="link_lost"),
+        pytest.param(
+            lambda toothbrush, client: toothbrush.disconnect(), id="disconnected"
+        ),
+    ],
+)
+async def test_session_continues_after_reconnect(
+    toothbrush: LaifenToothbrush,
+    client: FakeClient,
+    clock: list[float],
+    interrupt: Callable[[LaifenToothbrush, FakeClient], Any],
+) -> None:
+    client.set_running(True)
+    clock[0] = 160.0
+    if asyncio.iscoroutine(result := interrupt(toothbrush, client)):
+        await result
+    clock[0] = 170.0
+    await toothbrush.connect()
+    clock[0] = 220.0
+    client.set_running(False)
+
+    session = toothbrush.last_session
+    assert session is not None
+    assert session.duration == 120
+
+
+async def test_session_is_not_continued_after_a_long_gap(
+    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
+) -> None:
+    client.set_running(True)
+    clock[0] = 160.0
+    client.drop()
+    clock[0] = 260.0
+    await toothbrush.connect()
+    clock[0] = 300.0
+    client.set_running(False)
+
+    session = toothbrush.last_session
+    assert session is not None
+    assert session.duration == 40
 
 
 async def test_unknown_motor_refusal(
