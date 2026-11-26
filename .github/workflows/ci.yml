@@ -34,3 +34,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e '.[test]'
       - run: pytest
+
+  minimum-versions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[test]' 'bleak==3.0.2' 'bleak-retry-connector==4.7.1'
+      - run: pytest

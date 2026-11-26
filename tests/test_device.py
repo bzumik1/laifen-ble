@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Generator
 from datetime import datetime
+import gc
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,6 +21,7 @@ from laifen_ble import (
     Mode,
     ModeSettings,
     MotorStatus,
+    UnsupportedStateError,
 )
 from laifen_ble.const import CHARACTERISTIC_UUID
 from laifen_ble.protocol import READ_STATE, READ_VERSION, Command, Kind, encode_frame
@@ -250,8 +252,15 @@ async def test_pushed_state_updates(
         bytes.fromhex("aa0a0000a0"),
         bytes.fromhex("0102030405060702ff2a"),
         encode_frame(Command.STATE, Kind.REPORT, bytes(15)),
+        encode_frame(Command.STATE, Kind.REPORT, b"\x04" + STATE_PAYLOAD[1:]),
     ],
-    ids=["unexpected_acknowledgement", "request_echo", "filler", "unsupported_state"],
+    ids=[
+        "unexpected_acknowledgement",
+        "request_echo",
+        "filler",
+        "unsupported_state",
+        "invalid_state",
+    ],
 )
 async def test_ignored_frames(
     toothbrush: LaifenToothbrush, client: FakeClient, data: bytes
@@ -652,6 +661,51 @@ async def test_connect_with_stale_services(
     ]
 
 
+@pytest.mark.parametrize("error", [BleakError("not connected"), TimeoutError()])
+async def test_connect_when_clearing_the_services_fails(
+    ble_device: BLEDevice,
+    client: FakeClient,
+    establish: AsyncMock,
+    error: Exception,
+) -> None:
+    client.stale_services = 1
+    client.clear_cache.side_effect = error
+    toothbrush = LaifenToothbrush(ble_device)
+
+    await toothbrush.connect()
+
+    assert toothbrush.connected
+    assert establish.await_count == 2
+
+
+async def test_connect_unsupported_state(
+    ble_device: BLEDevice, establish: AsyncMock
+) -> None:
+    client = FakeClient(STATE_PAYLOAD[:15])
+    establish.side_effect = None
+    establish.return_value = client
+    toothbrush = LaifenToothbrush(ble_device)
+
+    with (
+        patch("laifen_ble.device.STATE_TIMEOUT", 30),
+        pytest.raises(UnsupportedStateError),
+    ):
+        async with asyncio.timeout(1):
+            await toothbrush.connect()
+
+    assert not toothbrush.connected
+    client.disconnect.assert_awaited_once()
+
+
+async def test_unknown_version_keeps_the_known_one(
+    toothbrush: LaifenToothbrush, client: FakeClient
+) -> None:
+    client.notify(encode_frame(Command.VERSION, Kind.REPORT, bytes.fromhex("0102")))
+
+    assert toothbrush.firmware_version == "V2.0.8.Y44.303"
+    assert toothbrush.firmware_version_raw == bytes.fromhex("0102")
+
+
 async def test_connect_without_characteristic(
     ble_device: BLEDevice, client: FakeClient, establish: AsyncMock
 ) -> None:
@@ -718,6 +772,37 @@ async def test_disconnect_during_command_fails_immediately(
     ):
         async with asyncio.timeout(1):
             await toothbrush.set_reminder_30s(True)
+
+
+@pytest.mark.parametrize(
+    ("method", "args"),
+    [
+        pytest.param("set_reminder_30s", (True,), id="command"),
+        pytest.param("update", (), id="update"),
+    ],
+)
+async def test_disconnect_while_writing_retrieves_errors(
+    toothbrush: LaifenToothbrush,
+    client: FakeClient,
+    method: str,
+    args: tuple[Any, ...],
+) -> None:
+    unhandled: list[dict[str, Any]] = []
+    asyncio.get_running_loop().set_exception_handler(
+        lambda _loop, context: unhandled.append(context)
+    )
+
+    async def drop_and_fail(_uuid: str, data: bytes, response: bool) -> None:
+        client.drop()
+        raise BleakError("disconnected")
+
+    client.write_gatt_char.side_effect = drop_and_fail
+
+    with pytest.raises(LaifenConnectionError):
+        await getattr(toothbrush, method)(*args)
+    gc.collect()
+
+    assert unhandled == []
 
 
 async def test_disconnect_during_connect(

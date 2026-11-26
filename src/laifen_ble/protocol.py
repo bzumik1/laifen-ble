@@ -19,6 +19,8 @@ MINIMUM_FRAME_LENGTH = 5
 SUPPORTED_STATE_LENGTHS = (20, 21, 23)
 ACCEPTED = 0x00
 MAX_BATTERY_LEVEL = 100
+FIRST_PRINTABLE_CHARACTER = 0x21
+LAST_PRINTABLE_CHARACTER = 0x7E
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +128,10 @@ def decode_acknowledgement(payload: bytes) -> int:
     return payload[0]
 
 
+def _is_printable_letter(value: int) -> bool:
+    return FIRST_PRINTABLE_CHARACTER <= value <= LAST_PRINTABLE_CHARACTER
+
+
 def _signed(value: int) -> int:
     return value - 0x100 if value > 0x7F else value
 
@@ -133,6 +139,8 @@ def _signed(value: int) -> int:
 def decode_version(payload: bytes) -> str | None:
     layout = VERSION_LAYOUTS.get(len(payload))
     if layout is None:
+        return None
+    if not all(_is_printable_letter(payload[index]) for index in layout.letter_indexes):
         return None
     parts = [
         chr(byte) if index in layout.letter_indexes else str(_signed(byte))

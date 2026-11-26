@@ -3,12 +3,10 @@ from __future__ import annotations
 from .const import (
     BRUSHING_TIME_STEP,
     LOCAL_NAME_PREFIX,
-    MANUFACTURER_ID,
     MAX_BRUSHING_TIME,
     MAX_SETTING,
     MIN_BRUSHING_TIME,
     MIN_SETTING,
-    SERVICE_UUID,
 )
 from .device import LaifenToothbrush
 from .exceptions import (
@@ -30,12 +28,10 @@ def is_supported(local_name: str | None) -> bool:
 __all__ = [
     "BRUSHING_TIME_STEP",
     "LOCAL_NAME_PREFIX",
-    "MANUFACTURER_ID",
     "MAX_BRUSHING_TIME",
     "MAX_SETTING",
     "MIN_BRUSHING_TIME",
     "MIN_SETTING",
-    "SERVICE_UUID",
     "BrushingSession",
     "InvalidFrameError",
     "LaifenCommandError",

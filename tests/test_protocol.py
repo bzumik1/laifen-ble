@@ -139,6 +139,10 @@ def test_decode_version_19_bytes() -> None:
     )
 
 
+def test_decode_version_unprintable_letter() -> None:
+    assert decode_version(bytes.fromhex("020008070404030003")) is None
+
+
 def test_decode_version_unknown_format() -> None:
     assert decode_version(bytes.fromhex("0102")) is None
 

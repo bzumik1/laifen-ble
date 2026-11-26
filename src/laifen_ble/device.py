@@ -25,6 +25,7 @@ from .exceptions import (
     LaifenConnectionError,
     LaifenMotorError,
     LaifenValueError,
+    UnsupportedStateError,
 )
 from .models import BrushingSession, LaifenState, Mode, ModeSettings
 from .protocol import (
@@ -244,6 +245,8 @@ class LaifenToothbrush:
             _LOGGER.debug("%s: The services lack %s", self.name, CHARACTERISTIC_UUID)
             try:
                 await client.clear_cache()
+            except (BleakError, TimeoutError) as err:
+                _LOGGER.debug("%s: Failed to clear the services: %s", self.name, err)
             finally:
                 await self._disconnect(client)
         raise LaifenConnectionError(f"{self.name} does not offer {CHARACTERISTIC_UUID}")
@@ -276,6 +279,7 @@ class LaifenToothbrush:
                 await waiter
         finally:
             self._state_waiters.remove(waiter)
+            _retrieve_exception(waiter)
 
     async def _send_command(self, frame: bytes) -> None:
         command = frame[1]
@@ -297,6 +301,7 @@ class LaifenToothbrush:
             ) from err
         finally:
             self._acknowledgements.pop(command, None)
+            _retrieve_exception(acknowledgement)
 
     async def _disconnect_client(self) -> None:
         client = self._client
@@ -334,6 +339,11 @@ class LaifenToothbrush:
             if not waiter.done():
                 waiter.set_exception(error)
 
+    def _fail_state_waiters(self, error: Exception) -> None:
+        for waiter in self._state_waiters:
+            if not waiter.done():
+                waiter.set_exception(error)
+
     def _handle_notification(
         self, _characteristic: BleakGATTCharacteristic, data: bytearray
     ) -> None:
@@ -347,6 +357,9 @@ class LaifenToothbrush:
         if frame.command == Command.STATE:
             try:
                 state = decode_state(frame.payload)
+            except UnsupportedStateError as err:
+                self._fail_state_waiters(err)
+                return
             except InvalidFrameError as err:
                 _LOGGER.debug("%s: Ignoring state: %s", self.name, err)
                 return
@@ -357,7 +370,8 @@ class LaifenToothbrush:
                     waiter.set_result(None)
         elif frame.command == Command.VERSION:
             self._firmware_version_raw = frame.payload
-            self._firmware_version = decode_version(frame.payload)
+            if (firmware_version := decode_version(frame.payload)) is not None:
+                self._firmware_version = firmware_version
         else:
             self._handle_acknowledgement(frame)
             return
@@ -390,3 +404,8 @@ class LaifenToothbrush:
     def _notify_callbacks(self) -> None:
         for callback in list(self._callbacks):
             callback()
+
+
+def _retrieve_exception(future: asyncio.Future[Any]) -> None:
+    if future.done() and not future.cancelled():
+        future.exception()
