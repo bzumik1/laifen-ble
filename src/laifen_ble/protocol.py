@@ -101,8 +101,6 @@ def decode_state(payload: bytes) -> LaifenState:
         mode = Mode(payload[0])
     except ValueError as err:
         raise UnsupportedStateError(f"Unknown mode {payload[0]}") from err
-    if payload[14] > MAX_BATTERY_LEVEL:
-        raise UnsupportedStateError(f"Battery level {payload[14]} out of range")
     return LaifenState(
         mode=mode,
         mode_settings=MappingProxyType(
@@ -114,7 +112,7 @@ def decode_state(payload: bytes) -> LaifenState:
             }
         ),
         airplane_mode=_flag(payload[13]),
-        battery_level=payload[14],
+        battery_level=payload[14] if payload[14] <= MAX_BATTERY_LEVEL else None,
         reminder_30s=_flag(payload[15]),
         brushing_time=int.from_bytes(payload[16:18], "big"),
         high_frequency=_flag(payload[18]),

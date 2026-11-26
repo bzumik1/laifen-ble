@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
 import logging
 from time import monotonic
 from typing import Any
@@ -71,6 +72,7 @@ class LaifenToothbrush:
         self._state_waiters: list[asyncio.Future[None]] = []
         self._session_start: tuple[float, datetime] | None = None
         self._interrupted_session: tuple[tuple[float, datetime], float] | None = None
+        self._awaiting_stop = False
         self._last_session: BrushingSession | None = None
 
     @property
@@ -130,7 +132,7 @@ class LaifenToothbrush:
             try:
                 async with asyncio.timeout(COMMAND_TIMEOUT):
                     await client.start_notify(
-                        CHARACTERISTIC_UUID, self._handle_notification
+                        CHARACTERISTIC_UUID, partial(self._handle_notification, client)
                     )
                     await client.write_gatt_char(
                         CHARACTERISTIC_UUID, READ_VERSION, response=True
@@ -366,8 +368,13 @@ class LaifenToothbrush:
                 waiter.set_exception(error)
 
     def _handle_notification(
-        self, _characteristic: BleakGATTCharacteristic, data: bytearray
+        self,
+        client: BleakClientWithServiceCache,
+        _characteristic: BleakGATTCharacteristic,
+        data: bytearray,
     ) -> None:
+        if client is not self._client and client is not self._pending_client:
+            return
         try:
             frame = decode_frame(bytes(data))
         except InvalidFrameError as err:
@@ -411,14 +418,24 @@ class LaifenToothbrush:
             _LOGGER.debug("%s: Ignoring acknowledgement: %s", self.name, err)
 
     def _track_session(self, running: bool) -> None:
-        if running:
-            if self._session_start is None:
-                self._session_start = self._resumed_session() or (
-                    monotonic(),
-                    datetime.now(UTC),
-                )
-            return
+        if not running:
+            self._interrupted_session = None
+            self._awaiting_stop = False
+            self._finish_session()
+        elif self._session_start is None and not self._awaiting_stop:
+            self._start_session()
+
+    def _start_session(self) -> None:
+        interrupted = self._interrupted_session
         self._interrupted_session = None
+        if interrupted is None:
+            self._session_start = (monotonic(), datetime.now(UTC))
+        elif monotonic() - interrupted[1] <= MAX_SESSION_GAP:
+            self._session_start = interrupted[0]
+        else:
+            self._awaiting_stop = True
+
+    def _finish_session(self) -> None:
         if self._session_start is None:
             return
         started, started_at = self._session_start
@@ -433,16 +450,6 @@ class LaifenToothbrush:
         if self._session_start is not None:
             self._interrupted_session = (self._session_start, monotonic())
         self._session_start = None
-
-    def _resumed_session(self) -> tuple[float, datetime] | None:
-        interrupted = self._interrupted_session
-        self._interrupted_session = None
-        if interrupted is None:
-            return None
-        session_start, interrupted_at = interrupted
-        if monotonic() - interrupted_at > MAX_SESSION_GAP:
-            return None
-        return session_start
 
     def _notify_callbacks(self) -> None:
         for callback in list(self._callbacks):

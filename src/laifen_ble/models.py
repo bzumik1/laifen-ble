@@ -44,7 +44,7 @@ class LaifenState:
     mode: Mode
     mode_settings: Mapping[Mode, ModeSettings]
     airplane_mode: bool
-    battery_level: int
+    battery_level: int | None
     reminder_30s: bool
     brushing_time: int
     high_frequency: bool
