@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "laifen-ble"
-version = "0.1.0"
+version = "0.2.0b1"
 description = "Bluetooth LE library for Laifen Wave electric toothbrushes"
 readme = "README.md"
 license = "MIT"
@@ -61,6 +61,9 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PL", "ASYNC"]
 ignore = ["PLR2004"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["PLR0913", "PLR0917"]
 
 [tool.ruff.lint.isort]
 force-sort-within-sections = true

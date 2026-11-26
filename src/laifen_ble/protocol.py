@@ -3,6 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntEnum
 
+from .const import (
+    BRUSHING_TIME_STEP,
+    MAX_BRUSHING_TIME,
+    MAX_SETTING,
+    MIN_BRUSHING_TIME,
+    MIN_SETTING,
+)
 from .exceptions import InvalidFrameError, UnsupportedStateError
 from .models import LaifenState, Mode, ModeSettings
 
@@ -11,11 +18,17 @@ MINIMUM_FRAME_LENGTH = 5
 SUPPORTED_STATE_LENGTHS = (20, 21, 23)
 VERSION_LENGTH = 9
 VERSION_LETTER_INDEX = 3
+ACCEPTED = 0x00
 
 
 class Command(IntEnum):
     VERSION = 0x01
+    MODE_SETTINGS = 0x04
+    BRUSHING_TIME = 0x05
     STATE = 0x0A
+    REMINDER_30S = 0x0B
+    HIGH_FREQUENCY = 0x0E
+    MOTOR = 0x0F
 
 
 class Kind(IntEnum):
@@ -91,6 +104,12 @@ def decode_state(payload: bytes) -> LaifenState:
     )
 
 
+def decode_acknowledgement(payload: bytes) -> int:
+    if len(payload) != 1:
+        raise InvalidFrameError(f"Unexpected acknowledgement: {payload.hex()}")
+    return payload[0]
+
+
 def _signed(value: int) -> int:
     return value - 0x100 if value > 0x7F else value
 
@@ -106,6 +125,33 @@ def decode_version(payload: bytes) -> str | None:
         f"V{parts[0]}.{parts[1]}.{parts[2]}."
         f"{parts[3]}{parts[4]}{parts[5]}.{parts[6]}{parts[7]}{parts[8]}"
     )
+
+
+def _check_limits(name: str, value: int, minimum: int, maximum: int) -> None:
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+
+
+def encode_mode_settings(mode: Mode, settings: ModeSettings) -> bytes:
+    _check_limits("Strength", settings.strength, *mode.strength_limits)
+    _check_limits("Range", settings.range, MIN_SETTING, MAX_SETTING)
+    _check_limits("Speed", settings.speed, MIN_SETTING, MAX_SETTING)
+    return encode_frame(
+        Command.MODE_SETTINGS,
+        Kind.WRITE,
+        bytes((mode, settings.strength, settings.range, settings.speed)),
+    )
+
+
+def encode_brushing_time(seconds: int) -> bytes:
+    _check_limits("Brushing time", seconds, MIN_BRUSHING_TIME, MAX_BRUSHING_TIME)
+    if seconds % BRUSHING_TIME_STEP:
+        raise ValueError(f"Brushing time must be a multiple of {BRUSHING_TIME_STEP}")
+    return encode_frame(Command.BRUSHING_TIME, Kind.WRITE, seconds.to_bytes(2, "big"))
+
+
+def encode_switch(command: Command, enabled: bool) -> bytes:
+    return encode_frame(command, Kind.WRITE, bytes((0x01 if enabled else 0x00,)))
 
 
 READ_STATE = encode_frame(Command.STATE, Kind.READ)

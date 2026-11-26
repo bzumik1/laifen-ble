@@ -9,10 +9,14 @@ from laifen_ble.protocol import (
     Command,
     Kind,
     checksum,
+    decode_acknowledgement,
     decode_frame,
     decode_state,
     decode_version,
+    encode_brushing_time,
     encode_frame,
+    encode_mode_settings,
+    encode_switch,
 )
 
 STATE_FRAME = bytes.fromhex("aa0a021400010a070a0a0a040a0a140101005d010078010085")
@@ -145,3 +149,64 @@ def test_decode_state_21_byte_payload() -> None:
 
 def test_decode_state_21_byte_payload_running() -> None:
     assert decode_state(decode_frame(STATE_21_RUNNING_FRAME).payload).running is True
+
+
+def test_encode_mode_settings() -> None:
+    assert encode_mode_settings(Mode.MODE_2, ModeSettings(10, 10, 9)) == bytes.fromhex(
+        "aa040104010a0a09a3"
+    )
+
+
+def test_encode_mode_settings_high_frequency() -> None:
+    assert encode_mode_settings(
+        Mode.HIGH_FREQUENCY, ModeSettings(20, 1, 1)
+    ) == encode_frame(Command.MODE_SETTINGS, Kind.WRITE, bytes((3, 20, 1, 1)))
+
+
+@pytest.mark.parametrize(
+    ("mode", "settings"),
+    [
+        pytest.param(Mode.MODE_1, ModeSettings(11, 5, 5), id="strength_too_high"),
+        pytest.param(Mode.MODE_1, ModeSettings(0, 5, 5), id="strength_too_low"),
+        pytest.param(
+            Mode.HIGH_FREQUENCY, ModeSettings(10, 5, 5), id="high_frequency_strength"
+        ),
+        pytest.param(Mode.MODE_1, ModeSettings(5, 0, 5), id="range_too_low"),
+        pytest.param(Mode.MODE_1, ModeSettings(5, 5, 11), id="speed_too_high"),
+    ],
+)
+def test_encode_mode_settings_invalid(mode: Mode, settings: ModeSettings) -> None:
+    with pytest.raises(ValueError):
+        encode_mode_settings(mode, settings)
+
+
+def test_encode_brushing_time() -> None:
+    assert encode_brushing_time(120) == bytes.fromhex("aa0501020078d4")
+
+
+@pytest.mark.parametrize("seconds", [30, 330, 75])
+def test_encode_brushing_time_invalid(seconds: int) -> None:
+    with pytest.raises(ValueError):
+        encode_brushing_time(seconds)
+
+
+@pytest.mark.parametrize(
+    ("enabled", "expected"),
+    [(True, "aa0f010101a4"), (False, "aa0f010100a5")],
+)
+def test_encode_switch(enabled: bool, expected: str) -> None:
+    assert encode_switch(Command.MOTOR, enabled) == bytes.fromhex(expected)
+
+
+def test_decode_acknowledgement() -> None:
+    assert decode_acknowledgement(decode_frame(ACK_FRAME).payload) == 0x00
+
+
+def test_decode_acknowledgement_invalid() -> None:
+    with pytest.raises(InvalidFrameError):
+        decode_acknowledgement(b"\x00\x00")
+
+
+def test_strength_limits() -> None:
+    assert Mode.MODE_1.strength_limits == (1, 10)
+    assert Mode.HIGH_FREQUENCY.strength_limits == (11, 20)

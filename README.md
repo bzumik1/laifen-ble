@@ -3,7 +3,9 @@
 Async Bluetooth LE library for the **Laifen Wave** electric toothbrush (`LFTB01-P`).
 
 It reads the toothbrush state (active mode, per-mode settings, battery level, brushing time,
-running state and feature flags) and, when its format is known, the firmware version. It is
+running state and feature flags), tracks brushing sessions, and controls the toothbrush: mode and
+per-mode strength, range and speed, brushing time, 30-second reminder, high frequency, and
+starting or stopping the motor. It reads the firmware version when its format is known. It is
 built on [bleak](https://github.com/hbldh/bleak) and
 [bleak-retry-connector](https://github.com/Bluetooth-Devices/bleak-retry-connector) and is
 intended to be used by the Home Assistant `laifen` integration.
@@ -22,7 +24,7 @@ import asyncio
 
 from bleak import BleakScanner
 
-from laifen_ble import LaifenToothbrush, is_supported
+from laifen_ble import LaifenToothbrush, Mode, is_supported
 
 
 async def main() -> None:
@@ -32,8 +34,10 @@ async def main() -> None:
     toothbrush = LaifenToothbrush(device)
     toothbrush.register_callback(lambda: print(toothbrush.state))
     await toothbrush.connect()
-    print(toothbrush.firmware_version, toothbrush.state)
+    await toothbrush.set_mode(Mode.MODE_2)
+    await toothbrush.set_brushing_time(150)
     await asyncio.sleep(30)
+    print(toothbrush.last_session)
     await toothbrush.disconnect()
 
 
@@ -43,14 +47,20 @@ asyncio.run(main())
 The toothbrush only advertises while it is awake (after a button press) and disconnects on its
 own about a minute after the last activity. While connected it pushes its state on every change,
 so registered callbacks are called whenever the state, the firmware version or the connection
-changes.
+changes. Every command waits for the acknowledgement of the toothbrush and reads the state back.
+
+A brushing session is a period in which the motor runs for at least five seconds; the short
+vibrations that confirm button presses are ignored. `last_session` holds the start time and
+duration of the last completed session.
 
 ## Protocol
 
 The protocol was documented by
 [marc-alexis-com/laifen-toolbox](https://github.com/marc-alexis-com/laifen-toolbox/blob/main/docs/PROTOCOL.md)
 and earlier explored by [UrbanTechIO/Laifen](https://github.com/UrbanTechIO/Laifen). This
-library only sends the documented read requests.
+library only sends commands that were confirmed on a real toothbrush. Airplane mode, head
+calibration, factory reset, emergency shutdown and reading the brushing history are
+intentionally not implemented.
 
 ## Development
 
