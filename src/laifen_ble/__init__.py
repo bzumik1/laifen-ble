@@ -17,6 +17,7 @@ from .exceptions import (
     LaifenConnectionError,
     LaifenError,
     LaifenMotorError,
+    LaifenValueError,
     UnsupportedStateError,
 )
 from .models import BrushingSession, LaifenState, Mode, ModeSettings, MotorStatus
@@ -43,6 +44,7 @@ __all__ = [
     "LaifenMotorError",
     "LaifenState",
     "LaifenToothbrush",
+    "LaifenValueError",
     "Mode",
     "ModeSettings",
     "MotorStatus",

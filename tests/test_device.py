@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Generator
 from datetime import datetime
 from typing import Any
@@ -15,12 +16,13 @@ from laifen_ble import (
     LaifenConnectionError,
     LaifenMotorError,
     LaifenToothbrush,
+    LaifenValueError,
     Mode,
     ModeSettings,
     MotorStatus,
 )
 from laifen_ble.const import CHARACTERISTIC_UUID
-from laifen_ble.protocol import READ_STATE, Command, Kind, encode_frame
+from laifen_ble.protocol import READ_STATE, READ_VERSION, Command, Kind, encode_frame
 
 STATE_PAYLOAD = bytes.fromhex("00010a070a0a0a040a0a140101005d0100780100")
 VERSION_FRAME = bytes.fromhex("aa010209020008590404030003f3")
@@ -61,6 +63,9 @@ class FakeClient:
 
     async def _write(self, _uuid: str, data: bytes, response: bool) -> None:
         self.written.append(bytes(data))
+        if data == READ_VERSION:
+            self.notify(VERSION_FRAME)
+            return
         if data == READ_STATE:
             if self.answer_state:
                 self.notify_state()
@@ -169,10 +174,11 @@ async def test_connect_reads_state(
     assert toothbrush.state.battery_level == 93
     assert toothbrush.state.mode is Mode.MODE_1
     assert toothbrush.last_session is None
-    client.write_gatt_char.assert_awaited_once_with(
+    assert client.written == [READ_VERSION, READ_STATE]
+    client.write_gatt_char.assert_awaited_with(
         CHARACTERISTIC_UUID, READ_STATE, response=True
     )
-    assert callback.call_count == 3
+    assert callback.call_count == 4
     assert establish.call_args.kwargs["ble_device_callback"]() is ble_device
 
 
@@ -379,9 +385,9 @@ async def test_set_high_frequency_mode_when_off(
     toothbrush = LaifenToothbrush(ble_device)
     await toothbrush.connect()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(LaifenValueError):
         await toothbrush.set_mode(Mode.HIGH_FREQUENCY)
-    with pytest.raises(ValueError):
+    with pytest.raises(LaifenValueError):
         await toothbrush.set_mode_settings(Mode.HIGH_FREQUENCY, ModeSettings(15, 1, 1))
 
 
@@ -657,3 +663,142 @@ async def test_connect_without_characteristic(
 
     assert not toothbrush.connected
     assert client.disconnect.await_count == 2
+
+
+@pytest.mark.parametrize(
+    ("method", "expected"),
+    [
+        pytest.param("set_strength", ModeSettings(3, 10, 7), id="strength"),
+        pytest.param("set_range", ModeSettings(1, 3, 7), id="range"),
+        pytest.param("set_speed", ModeSettings(1, 10, 3), id="speed"),
+    ],
+)
+async def test_set_active_mode_setting(
+    toothbrush: LaifenToothbrush,
+    client: FakeClient,
+    method: str,
+    expected: ModeSettings,
+) -> None:
+    await getattr(toothbrush, method)(3)
+
+    assert toothbrush.state is not None
+    assert toothbrush.state.active_mode_settings == expected
+
+
+async def test_concurrent_commands_do_not_interleave(
+    toothbrush: LaifenToothbrush, client: FakeClient
+) -> None:
+    await asyncio.gather(
+        toothbrush.set_mode_settings(Mode.MODE_3, ModeSettings(5, 6, 7)),
+        toothbrush.set_mode(Mode.MODE_2),
+    )
+
+    assert [data for data in client.written if data != READ_STATE] == [
+        frame(Command.MODE_SETTINGS, "02050607"),
+        frame(Command.MODE_SETTINGS, "00010a07"),
+        frame(Command.MODE_SETTINGS, "010a0a0a"),
+    ]
+    assert toothbrush.state is not None
+    assert toothbrush.state.mode is Mode.MODE_2
+
+
+async def test_disconnect_during_command_fails_immediately(
+    toothbrush: LaifenToothbrush, client: FakeClient
+) -> None:
+    async def drop_instead_of_acknowledging(
+        _uuid: str, data: bytes, response: bool
+    ) -> None:
+        client.drop()
+
+    client.write_gatt_char.side_effect = drop_instead_of_acknowledging
+
+    with (
+        patch("laifen_ble.device.COMMAND_TIMEOUT", 30),
+        pytest.raises(LaifenConnectionError),
+    ):
+        async with asyncio.timeout(1):
+            await toothbrush.set_reminder_30s(True)
+
+
+async def test_disconnect_during_connect(
+    ble_device: BLEDevice, client: FakeClient, establish: AsyncMock
+) -> None:
+    async def drop_instead_of_answering(
+        _uuid: str, data: bytes, response: bool
+    ) -> None:
+        if data == READ_STATE:
+            client.drop()
+
+    client.write_gatt_char.side_effect = drop_instead_of_answering
+    toothbrush = LaifenToothbrush(ble_device)
+    callback = MagicMock()
+    toothbrush.register_callback(callback)
+
+    with (
+        patch("laifen_ble.device.STATE_TIMEOUT", 30),
+        pytest.raises(LaifenConnectionError),
+    ):
+        async with asyncio.timeout(1):
+            await toothbrush.connect()
+
+    assert not toothbrush.connected
+    client.disconnect.assert_awaited_once()
+
+
+async def test_cancelled_connect_disconnects(
+    ble_device: BLEDevice, client: FakeClient, establish: AsyncMock
+) -> None:
+    client.start_notify.side_effect = asyncio.CancelledError
+    toothbrush = LaifenToothbrush(ble_device)
+
+    with pytest.raises(asyncio.CancelledError):
+        await toothbrush.connect()
+
+    assert not toothbrush.connected
+    client.disconnect.assert_awaited_once()
+
+
+async def test_second_connection_attempt_fails(
+    ble_device: BLEDevice, client: FakeClient, establish: AsyncMock
+) -> None:
+    client.stale_services = 1
+    first = establish.side_effect
+
+    async def fail_second(*args: Any, **kwargs: Any) -> FakeClient:
+        if establish.await_count > 1:
+            raise BleakError("gone")
+        result: FakeClient = await first(*args, **kwargs)
+        return result
+
+    establish.side_effect = fail_second
+    toothbrush = LaifenToothbrush(ble_device)
+
+    with pytest.raises(LaifenConnectionError):
+        await toothbrush.connect()
+
+    client.clear_cache.assert_awaited_once()
+
+
+async def test_disconnect_notifies_callbacks(toothbrush: LaifenToothbrush) -> None:
+    callback = MagicMock()
+    toothbrush.register_callback(callback)
+
+    await toothbrush.disconnect()
+
+    callback.assert_called_once()
+
+
+async def test_unregister_twice(toothbrush: LaifenToothbrush) -> None:
+    unregister = toothbrush.register_callback(MagicMock())
+
+    unregister()
+    unregister()
+
+
+async def test_command_without_state(
+    toothbrush: LaifenToothbrush, client: FakeClient
+) -> None:
+    toothbrush._state = None
+
+    with pytest.raises(LaifenConnectionError):
+        await toothbrush.set_mode(Mode.MODE_2)

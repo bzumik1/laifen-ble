@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
+from types import MappingProxyType
 
 from .const import (
     BRUSHING_TIME_STEP,
@@ -10,13 +11,14 @@ from .const import (
     MIN_BRUSHING_TIME,
     MIN_SETTING,
 )
-from .exceptions import InvalidFrameError, UnsupportedStateError
+from .exceptions import InvalidFrameError, LaifenValueError, UnsupportedStateError
 from .models import LaifenState, Mode, ModeSettings
 
 HEADER = 0xAA
 MINIMUM_FRAME_LENGTH = 5
 SUPPORTED_STATE_LENGTHS = (20, 21, 23)
 ACCEPTED = 0x00
+MAX_BATTERY_LEVEL = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,14 +99,18 @@ def decode_state(payload: bytes) -> LaifenState:
         mode = Mode(payload[0])
     except ValueError as err:
         raise InvalidFrameError(f"Unknown mode {payload[0]}") from err
+    if payload[14] > MAX_BATTERY_LEVEL:
+        raise InvalidFrameError(f"Battery level {payload[14]} out of range")
     return LaifenState(
         mode=mode,
-        mode_settings={
-            Mode.MODE_1: _mode_settings(payload, 1),
-            Mode.MODE_2: _mode_settings(payload, 4),
-            Mode.MODE_3: _mode_settings(payload, 7),
-            Mode.HIGH_FREQUENCY: _mode_settings(payload, 10),
-        },
+        mode_settings=MappingProxyType(
+            {
+                Mode.MODE_1: _mode_settings(payload, 1),
+                Mode.MODE_2: _mode_settings(payload, 4),
+                Mode.MODE_3: _mode_settings(payload, 7),
+                Mode.HIGH_FREQUENCY: _mode_settings(payload, 10),
+            }
+        ),
         airplane_mode=_flag(payload[13]),
         battery_level=payload[14],
         reminder_30s=_flag(payload[15]),
@@ -142,7 +148,7 @@ def decode_version(payload: bytes) -> str | None:
 
 def _check_limits(name: str, value: int, minimum: int, maximum: int) -> None:
     if not minimum <= value <= maximum:
-        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+        raise LaifenValueError(f"{name} must be between {minimum} and {maximum}")
 
 
 def encode_mode_settings(mode: Mode, settings: ModeSettings) -> bytes:
@@ -159,7 +165,9 @@ def encode_mode_settings(mode: Mode, settings: ModeSettings) -> bytes:
 def encode_brushing_time(seconds: int) -> bytes:
     _check_limits("Brushing time", seconds, MIN_BRUSHING_TIME, MAX_BRUSHING_TIME)
     if seconds % BRUSHING_TIME_STEP:
-        raise ValueError(f"Brushing time must be a multiple of {BRUSHING_TIME_STEP}")
+        raise LaifenValueError(
+            f"Brushing time must be a multiple of {BRUSHING_TIME_STEP}"
+        )
     return encode_frame(Command.BRUSHING_TIME, Kind.WRITE, seconds.to_bytes(2, "big"))
 
 

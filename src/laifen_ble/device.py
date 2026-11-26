@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 import logging
 from time import monotonic
+from typing import Any
 
 from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
@@ -22,11 +24,13 @@ from .exceptions import (
     LaifenCommandError,
     LaifenConnectionError,
     LaifenMotorError,
+    LaifenValueError,
 )
 from .models import BrushingSession, LaifenState, Mode, ModeSettings
 from .protocol import (
     ACCEPTED,
     READ_STATE,
+    READ_VERSION,
     Command,
     Frame,
     Kind,
@@ -51,14 +55,15 @@ class LaifenToothbrush:
             self._address = address_or_ble_device
             self._ble_device = None
         self._client: BleakClientWithServiceCache | None = None
+        self._pending_client: BleakClientWithServiceCache | None = None
         self._connect_lock = asyncio.Lock()
-        self._command_lock = asyncio.Lock()
+        self._operation_lock = asyncio.Lock()
         self._callbacks: list[Callable[[], None]] = []
         self._state: LaifenState | None = None
         self._firmware_version: str | None = None
         self._firmware_version_raw: bytes | None = None
-        self._state_received = asyncio.Event()
         self._acknowledgements: dict[int, asyncio.Future[int]] = {}
+        self._state_waiters: list[asyncio.Future[None]] = []
         self._session_start: tuple[float, datetime] | None = None
         self._last_session: BrushingSession | None = None
 
@@ -99,7 +104,8 @@ class LaifenToothbrush:
         self._callbacks.append(callback)
 
         def unregister() -> None:
-            self._callbacks.remove(callback)
+            if callback in self._callbacks:
+                self._callbacks.remove(callback)
 
         return unregister
 
@@ -110,38 +116,137 @@ class LaifenToothbrush:
             ble_device = self._ble_device
             if ble_device is None:
                 raise LaifenConnectionError(f"{self.name} has not been seen yet")
-            client = await self._establish_connection(ble_device, True)
-            if client.services.get_characteristic(CHARACTERISTIC_UUID) is None:
-                _LOGGER.debug("%s: Cached services are stale, discovering", self.name)
-                await client.clear_cache()
-                await self._disconnect(client)
-                client = await self._establish_connection(ble_device, False)
-                if client.services.get_characteristic(CHARACTERISTIC_UUID) is None:
-                    await self._disconnect(client)
-                    raise LaifenConnectionError(
-                        f"{self.name} does not offer {CHARACTERISTIC_UUID}"
-                    )
-            self._client = client
-            self._state_received.clear()
+            client = await self._open(ble_device)
+            self._pending_client = client
             try:
                 await client.start_notify(
                     CHARACTERISTIC_UUID, self._handle_notification
                 )
                 await client.write_gatt_char(
-                    CHARACTERISTIC_UUID, READ_STATE, response=True
+                    CHARACTERISTIC_UUID, READ_VERSION, response=True
                 )
-                async with asyncio.timeout(STATE_TIMEOUT):
-                    await self._state_received.wait()
-            except (BleakError, TimeoutError) as err:
-                await self._disconnect_client()
-                raise LaifenConnectionError(
-                    f"Failed to read the state of {self.name}: {err}"
-                ) from err
+                await self._read_state(client, STATE_TIMEOUT)
+            except BaseException as err:
+                self._pending_client = None
+                await self._disconnect(client)
+                if isinstance(err, BleakError | TimeoutError):
+                    raise LaifenConnectionError(
+                        f"Failed to read the state of {self.name}: {err}"
+                    ) from err
+                raise
+            self._pending_client = None
+            self._client = client
         self._notify_callbacks()
 
     async def disconnect(self) -> None:
         async with self._connect_lock:
+            was_connected = self._client is not None
             await self._disconnect_client()
+        if was_connected:
+            self._notify_callbacks()
+
+    async def update(self) -> None:
+        async with self._operation_lock:
+            client = self._connected_client()
+            try:
+                await self._read_state(client, COMMAND_TIMEOUT)
+            except (BleakError, TimeoutError) as err:
+                raise LaifenConnectionError(
+                    f"Failed to read the state of {self.name}: {err}"
+                ) from err
+
+    async def set_mode(self, mode: Mode) -> None:
+        async with self._operation_lock:
+            state = self._connected_state()
+            self._check_mode_available(state, mode)
+            await self._send_command(
+                encode_mode_settings(mode, state.mode_settings[mode])
+            )
+
+    async def set_mode_settings(self, mode: Mode, settings: ModeSettings) -> None:
+        async with self._operation_lock:
+            state = self._connected_state()
+            self._check_mode_available(state, mode)
+            await self._send_command(encode_mode_settings(mode, settings))
+            if mode is not state.mode:
+                current = self._connected_state()
+                await self._send_command(
+                    encode_mode_settings(state.mode, current.mode_settings[state.mode])
+                )
+
+    async def set_strength(self, value: int) -> None:
+        await self._set_active_mode_settings(strength=value)
+
+    async def set_range(self, value: int) -> None:
+        await self._set_active_mode_settings(range=value)
+
+    async def set_speed(self, value: int) -> None:
+        await self._set_active_mode_settings(speed=value)
+
+    async def set_brushing_time(self, seconds: int) -> None:
+        async with self._operation_lock:
+            await self._send_command(encode_brushing_time(seconds))
+
+    async def set_reminder_30s(self, enabled: bool) -> None:
+        async with self._operation_lock:
+            await self._send_command(encode_switch(Command.REMINDER_30S, enabled))
+
+    async def set_high_frequency(self, enabled: bool) -> None:
+        async with self._operation_lock:
+            state = self._connected_state()
+            if not enabled and state.mode is Mode.HIGH_FREQUENCY:
+                await self._send_command(
+                    encode_mode_settings(Mode.MODE_3, state.mode_settings[Mode.MODE_3])
+                )
+            await self._send_command(encode_switch(Command.HIGH_FREQUENCY, enabled))
+
+    async def start(self) -> None:
+        await self._send_motor_command(True)
+
+    async def stop(self) -> None:
+        await self._send_motor_command(False)
+
+    async def _set_active_mode_settings(self, **changes: int) -> None:
+        async with self._operation_lock:
+            state = self._connected_state()
+            settings = replace(state.active_mode_settings, **changes)
+            await self._send_command(encode_mode_settings(state.mode, settings))
+
+    async def _send_motor_command(self, running: bool) -> None:
+        async with self._operation_lock:
+            try:
+                await self._send_command(encode_switch(Command.MOTOR, running))
+            except LaifenCommandError as err:
+                raise LaifenMotorError(err.command, err.status) from err
+
+    def _connected_client(self) -> BleakClientWithServiceCache:
+        client = self._client
+        if client is None or not client.is_connected:
+            raise LaifenConnectionError(f"{self.name} is not connected")
+        return client
+
+    def _connected_state(self) -> LaifenState:
+        self._connected_client()
+        if self._state is None:
+            raise LaifenConnectionError(f"{self.name} is not connected")
+        return self._state
+
+    @staticmethod
+    def _check_mode_available(state: LaifenState, mode: Mode) -> None:
+        if mode not in state.available_modes:
+            raise LaifenValueError("High frequency must be turned on first")
+
+    async def _open(self, ble_device: BLEDevice) -> BleakClientWithServiceCache:
+        for use_services_cache in (True, False):
+            client = await self._establish_connection(ble_device, use_services_cache)
+            if client.services.get_characteristic(CHARACTERISTIC_UUID) is not None:
+                return client
+            _LOGGER.debug("%s: The services lack %s", self.name, CHARACTERISTIC_UUID)
+            try:
+                await client.clear_cache()
+            finally:
+                await self._disconnect(client)
+        raise LaifenConnectionError(f"{self.name} does not offer {CHARACTERISTIC_UUID}")
 
     async def _establish_connection(
         self, ble_device: BLEDevice, use_services_cache: bool
@@ -160,103 +265,44 @@ class LaifenToothbrush:
                 f"Failed to connect to {self.name}: {err}"
             ) from err
 
-    async def set_mode(self, mode: Mode) -> None:
-        state = self._connected_state()
-        self._check_mode_available(state, mode)
-        await self._send_command(encode_mode_settings(mode, state.mode_settings[mode]))
-
-    async def set_mode_settings(self, mode: Mode, settings: ModeSettings) -> None:
-        state = self._connected_state()
-        self._check_mode_available(state, mode)
-        await self._send_command(encode_mode_settings(mode, settings))
-        if mode is not state.mode:
-            current = self._connected_state()
-            await self._send_command(
-                encode_mode_settings(state.mode, current.mode_settings[state.mode])
-            )
-
-    async def set_brushing_time(self, seconds: int) -> None:
-        await self._send_command(encode_brushing_time(seconds))
-
-    async def set_reminder_30s(self, enabled: bool) -> None:
-        await self._send_command(encode_switch(Command.REMINDER_30S, enabled))
-
-    async def set_high_frequency(self, enabled: bool) -> None:
-        state = self._connected_state()
-        if not enabled and state.mode is Mode.HIGH_FREQUENCY:
-            await self._send_command(
-                encode_mode_settings(Mode.MODE_3, state.mode_settings[Mode.MODE_3])
-            )
-        await self._send_command(encode_switch(Command.HIGH_FREQUENCY, enabled))
-
-    async def start(self) -> None:
-        await self._send_motor_command(True)
-
-    async def stop(self) -> None:
-        await self._send_motor_command(False)
-
-    async def _send_motor_command(self, running: bool) -> None:
+    async def _read_state(
+        self, client: BleakClientWithServiceCache, max_wait: float
+    ) -> None:
+        waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._state_waiters.append(waiter)
         try:
-            await self._send_command(encode_switch(Command.MOTOR, running))
-        except LaifenCommandError as err:
-            raise LaifenMotorError(err.command, err.status) from err
-
-    def _connected_state(self) -> LaifenState:
-        if not self.connected or self._state is None:
-            raise LaifenConnectionError(f"{self.name} is not connected")
-        return self._state
-
-    @staticmethod
-    def _check_mode_available(state: LaifenState, mode: Mode) -> None:
-        if mode is Mode.HIGH_FREQUENCY and not state.high_frequency:
-            raise ValueError("High frequency must be turned on first")
-
-    async def update(self) -> None:
-        async with self._command_lock:
-            client = self._connected_client()
-            try:
-                await self._read_state(client)
-            except (BleakError, TimeoutError) as err:
-                raise LaifenConnectionError(
-                    f"Failed to read the state of {self.name}: {err}"
-                ) from err
-
-    def _connected_client(self) -> BleakClientWithServiceCache:
-        client = self._client
-        if client is None or not client.is_connected:
-            raise LaifenConnectionError(f"{self.name} is not connected")
-        return client
-
-    async def _read_state(self, client: BleakClientWithServiceCache) -> None:
-        self._state_received.clear()
-        await client.write_gatt_char(CHARACTERISTIC_UUID, READ_STATE, response=True)
-        async with asyncio.timeout(COMMAND_TIMEOUT):
-            await self._state_received.wait()
+            await client.write_gatt_char(CHARACTERISTIC_UUID, READ_STATE, response=True)
+            async with asyncio.timeout(max_wait):
+                await waiter
+        finally:
+            self._state_waiters.remove(waiter)
 
     async def _send_command(self, frame: bytes) -> None:
         command = frame[1]
-        async with self._command_lock:
-            client = self._connected_client()
-            acknowledgement = asyncio.get_running_loop().create_future()
-            self._acknowledgements[command] = acknowledgement
-            try:
-                await client.write_gatt_char(CHARACTERISTIC_UUID, frame, response=True)
-                async with asyncio.timeout(COMMAND_TIMEOUT):
-                    status = await acknowledgement
-                if status != ACCEPTED:
-                    raise LaifenCommandError(command, status)
-                await self._read_state(client)
-            except (BleakError, TimeoutError) as err:
-                raise LaifenConnectionError(
-                    f"Failed to send a command to {self.name}: {err}"
-                ) from err
-            finally:
-                self._acknowledgements.pop(command, None)
+        client = self._connected_client()
+        acknowledgement: asyncio.Future[int] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._acknowledgements[command] = acknowledgement
+        try:
+            await client.write_gatt_char(CHARACTERISTIC_UUID, frame, response=True)
+            async with asyncio.timeout(COMMAND_TIMEOUT):
+                status = await acknowledgement
+            if status != ACCEPTED:
+                raise LaifenCommandError(command, status)
+            await self._read_state(client, COMMAND_TIMEOUT)
+        except (BleakError, TimeoutError) as err:
+            raise LaifenConnectionError(
+                f"Failed to send a command to {self.name}: {err}"
+            ) from err
+        finally:
+            self._acknowledgements.pop(command, None)
 
     async def _disconnect_client(self) -> None:
         client = self._client
         self._client = None
         self._session_start = None
+        self._fail_waiters()
         if client is not None:
             await self._disconnect(client)
 
@@ -267,12 +313,26 @@ class LaifenToothbrush:
             _LOGGER.debug("%s: Error while disconnecting: %s", self.name, err)
 
     def _handle_disconnect(self, client: BleakClientWithServiceCache) -> None:
+        if client is self._pending_client:
+            self._fail_waiters()
+            return
         if client is not self._client:
             return
         _LOGGER.debug("%s: Disconnected", self.name)
         self._client = None
         self._session_start = None
+        self._fail_waiters()
         self._notify_callbacks()
+
+    def _fail_waiters(self) -> None:
+        error = LaifenConnectionError(f"{self.name} disconnected")
+        waiters: list[asyncio.Future[Any]] = [
+            *self._state_waiters,
+            *self._acknowledgements.values(),
+        ]
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_exception(error)
 
     def _handle_notification(
         self, _characteristic: BleakGATTCharacteristic, data: bytearray
@@ -292,7 +352,9 @@ class LaifenToothbrush:
                 return
             self._track_session(state.running)
             self._state = state
-            self._state_received.set()
+            for waiter in self._state_waiters:
+                if not waiter.done():
+                    waiter.set_result(None)
         elif frame.command == Command.VERSION:
             self._firmware_version_raw = frame.payload
             self._firmware_version = decode_version(frame.payload)

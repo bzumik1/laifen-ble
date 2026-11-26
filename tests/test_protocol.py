@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from laifen_ble import InvalidFrameError, Mode, ModeSettings, UnsupportedStateError
+from laifen_ble import (
+    InvalidFrameError,
+    LaifenValueError,
+    Mode,
+    ModeSettings,
+    UnsupportedStateError,
+)
 from laifen_ble.protocol import (
     READ_STATE,
     READ_VERSION,
@@ -217,3 +223,30 @@ def test_decode_acknowledgement_invalid() -> None:
 def test_strength_limits() -> None:
     assert Mode.MODE_1.strength_limits == (1, 10)
     assert Mode.HIGH_FREQUENCY.strength_limits == (11, 20)
+
+
+def test_decode_state_battery_out_of_range() -> None:
+    payload = bytearray(decode_frame(STATE_FRAME).payload)
+    payload[14] = 0xFF
+    with pytest.raises(InvalidFrameError):
+        decode_state(bytes(payload))
+
+
+@pytest.mark.parametrize(
+    ("high_frequency", "modes"),
+    [
+        (True, (Mode.MODE_1, Mode.MODE_2, Mode.MODE_3, Mode.HIGH_FREQUENCY)),
+        (False, (Mode.MODE_1, Mode.MODE_2, Mode.MODE_3)),
+    ],
+)
+def test_available_modes(high_frequency: bool, modes: tuple[Mode, ...]) -> None:
+    payload = bytearray(decode_frame(STATE_FRAME).payload)
+    payload[18] = 0x01 if high_frequency else 0x00
+    assert decode_state(bytes(payload)).available_modes == modes
+
+
+def test_invalid_values_raise_laifen_value_error() -> None:
+    with pytest.raises(LaifenValueError):
+        encode_brushing_time(75)
+    with pytest.raises(ValueError):
+        encode_mode_settings(Mode.MODE_1, ModeSettings(0, 1, 1))

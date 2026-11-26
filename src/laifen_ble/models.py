@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum
@@ -41,7 +42,7 @@ class ModeSettings:
 @dataclass(frozen=True, slots=True)
 class LaifenState:
     mode: Mode
-    mode_settings: dict[Mode, ModeSettings]
+    mode_settings: Mapping[Mode, ModeSettings]
     airplane_mode: bool
     battery_level: int
     reminder_30s: bool
@@ -52,6 +53,12 @@ class LaifenState:
     @property
     def active_mode_settings(self) -> ModeSettings:
         return self.mode_settings[self.mode]
+
+    @property
+    def available_modes(self) -> tuple[Mode, ...]:
+        if self.high_frequency:
+            return tuple(Mode)
+        return Mode.MODE_1, Mode.MODE_2, Mode.MODE_3
 
 
 @dataclass(frozen=True, slots=True)

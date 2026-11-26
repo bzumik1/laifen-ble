@@ -27,6 +27,10 @@ class LaifenMotorError(LaifenCommandError):
             return None
 
 
+class LaifenValueError(LaifenError, ValueError):
+    pass
+
+
 class InvalidFrameError(LaifenError):
     pass
 

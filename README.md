@@ -14,8 +14,8 @@ intended to be used by the Home Assistant `laifen` integration.
 
 | Model | Advertised name | Status |
 |---|---|---|
-| Laifen Wave (plastic, stainless steel and aluminium shells) | `LFTB01-P-xxxx` | Supported |
-| Laifen Wave SE, Wave Pro and other models | `LFTB01-SE-…`, `LFTB02-…` | Not supported (different protocol) |
+| Laifen Wave (tested with the stainless steel version) | `LFTB01-P-xxxx` | Supported |
+| Other Laifen models | other names | Not supported |
 
 ## Usage
 
