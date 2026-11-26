@@ -51,7 +51,8 @@ changes. Every command waits for the acknowledgement of the toothbrush and reads
 The battery level is not pushed, so call `update()` to read the state again, for example while
 the toothbrush stays awake on its charger.
 
-`state.battery_level` is `None` when the toothbrush reports a value above 100.
+`state.battery_level` is `None` when the toothbrush reports a value above 100. After a
+disconnect, `state` keeps the last state received, so check `connected` before relying on it.
 
 A brushing session is a period in which the motor runs for at least five seconds; the short
 vibrations that confirm button presses are ignored. `last_session` holds the start time and

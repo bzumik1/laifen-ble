@@ -235,6 +235,12 @@ def test_state_is_hashable() -> None:
     assert hash(state) == hash(decode_state(decode_frame(STATE_FRAME).payload))
 
 
+def test_decode_state_full_battery() -> None:
+    payload = bytearray(decode_frame(STATE_FRAME).payload)
+    payload[14] = 100
+    assert decode_state(bytes(payload)).battery_level == 100
+
+
 def test_decode_state_battery_out_of_range() -> None:
     payload = bytearray(decode_frame(STATE_FRAME).payload)
     payload[14] = 0xFF

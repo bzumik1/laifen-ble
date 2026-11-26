@@ -844,6 +844,49 @@ async def test_short_run_is_not_a_session(
     assert toothbrush.last_session is None
 
 
+async def test_shortest_session(
+    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
+) -> None:
+    client.set_running(True)
+    clock[0] = 105.0
+    client.set_running(False)
+
+    session = toothbrush.last_session
+    assert session is not None
+    assert session.duration == 5
+
+
+async def test_rest_of_session_after_just_over_a_minute(
+    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
+) -> None:
+    client.set_running(True)
+    clock[0] = 160.0
+    client.drop()
+    clock[0] = 220.5
+    await toothbrush.connect()
+    clock[0] = 250.5
+    client.set_running(False)
+
+    session = toothbrush.last_session
+    assert session is not None
+    assert session.duration == 30
+
+
+async def test_written_frames_echoed_back_are_ignored(
+    toothbrush: LaifenToothbrush, client: FakeClient
+) -> None:
+    async def echo_then_answer(uuid: str, data: bytes, response: bool) -> None:
+        client.notify(data)
+        await client._write(uuid, data, response)
+
+    client.write_gatt_char.side_effect = echo_then_answer
+
+    await toothbrush.set_reminder_30s(True)
+
+    assert toothbrush.state is not None
+    assert toothbrush.state.reminder_30s is True
+
+
 async def test_session_is_dropped_when_it_ends_while_disconnected(
     toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
 ) -> None:
@@ -957,20 +1000,32 @@ async def test_merged_sessions_are_recorded_from_the_reconnect(
     assert session.duration == 300
 
 
+@pytest.mark.parametrize(
+    ("stopped_at", "duration"),
+    [
+        pytest.param(400.2, 300, id="full_session"),
+        pytest.param(405.0, 305, id="within_tolerance"),
+        pytest.param(405.1, 195, id="beyond_tolerance"),
+    ],
+)
 async def test_full_session_with_a_reconnect(
-    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
+    toothbrush: LaifenToothbrush,
+    client: FakeClient,
+    clock: list[float],
+    stopped_at: float,
+    duration: int,
 ) -> None:
     client.set_running(True)
     clock[0] = 200.0
     client.drop()
     clock[0] = 210.0
     await toothbrush.connect()
-    clock[0] = 400.2
+    clock[0] = stopped_at
     client.set_running(False)
 
     session = toothbrush.last_session
     assert session is not None
-    assert session.duration == 300
+    assert session.duration == duration
 
 
 async def test_merged_sessions_are_recorded_from_the_latest_reconnect(
@@ -1398,6 +1453,7 @@ async def test_disconnect_notifies_callbacks(toothbrush: LaifenToothbrush) -> No
     callback = MagicMock()
     toothbrush.register_callback(callback)
 
+    await toothbrush.disconnect()
     await toothbrush.disconnect()
 
     callback.assert_called_once()
