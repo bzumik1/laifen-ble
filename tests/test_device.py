@@ -594,3 +594,26 @@ async def test_other_command_refused(
         await toothbrush.set_brushing_time(120)
 
     assert not isinstance(err.value, LaifenMotorError)
+
+
+async def test_update(toothbrush: LaifenToothbrush, client: FakeClient) -> None:
+    client.payload[14] = 80
+    callback = MagicMock()
+    toothbrush.register_callback(callback)
+
+    await toothbrush.update()
+
+    assert client.written == [READ_STATE]
+    assert toothbrush.state is not None
+    assert toothbrush.state.battery_level == 80
+    callback.assert_called_once()
+
+
+async def test_update_errors(toothbrush: LaifenToothbrush, client: FakeClient) -> None:
+    client.answer_state = False
+    with pytest.raises(LaifenConnectionError):
+        await toothbrush.update()
+
+    client.is_connected = False
+    with pytest.raises(LaifenConnectionError):
+        await toothbrush.update()

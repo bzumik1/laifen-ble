@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "laifen-ble"
-version = "0.2.0"
+version = "0.3.0"
 description = "Bluetooth LE library for Laifen Wave electric toothbrushes"
 readme = "README.md"
 license = "MIT"

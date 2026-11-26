@@ -195,12 +195,32 @@ class LaifenToothbrush:
         if mode is Mode.HIGH_FREQUENCY and not state.high_frequency:
             raise ValueError("High frequency must be turned on first")
 
+    async def update(self) -> None:
+        async with self._command_lock:
+            client = self._connected_client()
+            try:
+                await self._read_state(client)
+            except (BleakError, TimeoutError) as err:
+                raise LaifenConnectionError(
+                    f"Failed to read the state of {self.name}: {err}"
+                ) from err
+
+    def _connected_client(self) -> BleakClientWithServiceCache:
+        client = self._client
+        if client is None or not client.is_connected:
+            raise LaifenConnectionError(f"{self.name} is not connected")
+        return client
+
+    async def _read_state(self, client: BleakClientWithServiceCache) -> None:
+        self._state_received.clear()
+        await client.write_gatt_char(CHARACTERISTIC_UUID, READ_STATE, response=True)
+        async with asyncio.timeout(COMMAND_TIMEOUT):
+            await self._state_received.wait()
+
     async def _send_command(self, frame: bytes) -> None:
         command = frame[1]
         async with self._command_lock:
-            client = self._client
-            if client is None or not client.is_connected:
-                raise LaifenConnectionError(f"{self.name} is not connected")
+            client = self._connected_client()
             acknowledgement = asyncio.get_running_loop().create_future()
             self._acknowledgements[command] = acknowledgement
             try:
@@ -209,12 +229,7 @@ class LaifenToothbrush:
                     status = await acknowledgement
                 if status != ACCEPTED:
                     raise LaifenCommandError(command, status)
-                self._state_received.clear()
-                await client.write_gatt_char(
-                    CHARACTERISTIC_UUID, READ_STATE, response=True
-                )
-                async with asyncio.timeout(COMMAND_TIMEOUT):
-                    await self._state_received.wait()
+                await self._read_state(client)
             except (BleakError, TimeoutError) as err:
                 raise LaifenConnectionError(
                     f"Failed to send a command to {self.name}: {err}"

@@ -16,9 +16,19 @@ from .models import LaifenState, Mode, ModeSettings
 HEADER = 0xAA
 MINIMUM_FRAME_LENGTH = 5
 SUPPORTED_STATE_LENGTHS = (20, 21, 23)
-VERSION_LENGTH = 9
-VERSION_LETTER_INDEX = 3
 ACCEPTED = 0x00
+
+
+@dataclass(frozen=True, slots=True)
+class VersionLayout:
+    letter_indexes: frozenset[int]
+    group_sizes: tuple[int, ...]
+
+
+VERSION_LAYOUTS = {
+    9: VersionLayout(frozenset({3}), (1, 1, 1, 3, 3)),
+    19: VersionLayout(frozenset({4, 5, 6, 7, 10, 13}), (1, 1, 2, 3, 3, 3, 3, 3)),
+}
 
 
 class Command(IntEnum):
@@ -115,16 +125,19 @@ def _signed(value: int) -> int:
 
 
 def decode_version(payload: bytes) -> str | None:
-    if len(payload) != VERSION_LENGTH:
+    layout = VERSION_LAYOUTS.get(len(payload))
+    if layout is None:
         return None
     parts = [
-        chr(byte) if index == VERSION_LETTER_INDEX else str(_signed(byte))
+        chr(byte) if index in layout.letter_indexes else str(_signed(byte))
         for index, byte in enumerate(payload)
     ]
-    return (
-        f"V{parts[0]}.{parts[1]}.{parts[2]}."
-        f"{parts[3]}{parts[4]}{parts[5]}.{parts[6]}{parts[7]}{parts[8]}"
-    )
+    groups = []
+    start = 0
+    for size in layout.group_sizes:
+        groups.append("".join(parts[start : start + size]))
+        start += size
+    return "V" + ".".join(groups)
 
 
 def _check_limits(name: str, value: int, minimum: int, maximum: int) -> None:

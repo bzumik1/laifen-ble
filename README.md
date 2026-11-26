@@ -48,6 +48,8 @@ The toothbrush only advertises while it is awake (after a button press) and disc
 own about a minute after the last activity. While connected it pushes its state on every change,
 so registered callbacks are called whenever the state, the firmware version or the connection
 changes. Every command waits for the acknowledgement of the toothbrush and reads the state back.
+The battery level is not pushed, so call `update()` to read the state again, for example while
+the toothbrush stays awake on its charger.
 
 A brushing session is a period in which the motor runs for at least five seconds; the short
 vibrations that confirm button presses are ignored. `last_session` holds the start time and

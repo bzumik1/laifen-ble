@@ -126,8 +126,15 @@ def test_decode_version_signed_bytes() -> None:
     assert decode_version(bytes.fromhex("ff0008590404030003")) == "V-1.0.8.Y44.303"
 
 
+def test_decode_version_19_bytes() -> None:
+    assert (
+        decode_version(decode_frame(VERSION_19_FRAME).payload)
+        == "V2.0.93.XXX.T01.B00.Y44.303"
+    )
+
+
 def test_decode_version_unknown_format() -> None:
-    assert decode_version(decode_frame(VERSION_19_FRAME).payload) is None
+    assert decode_version(bytes.fromhex("0102")) is None
 
 
 def test_decode_state_21_byte_payload() -> None:
