@@ -60,9 +60,9 @@ duration of the last completed session. Sessions are measured while the toothbru
 - A session that was already running when the toothbrush was connected starts at the moment of
   the connection.
 - When the connection drops while the motor runs and the toothbrush is connected again within a
-  minute while it still runs, the session continues. If it would then last longer than the
-  longest brushing time, the toothbrush must have been stopped and started again in between, and
-  the session starts at the moment of the new connection.
+  minute while it still runs, the session continues. If it would then last more than a few
+  seconds longer than the longest brushing time, the toothbrush must have been stopped and
+  started again in between, and the session starts at the moment of the latest connection.
 - When the toothbrush is connected again later, only the rest of the session is recorded. When
   it has stopped by then, the interrupted session is not recorded.
 

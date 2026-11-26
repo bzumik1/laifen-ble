@@ -957,6 +957,58 @@ async def test_merged_sessions_are_recorded_from_the_reconnect(
     assert session.duration == 300
 
 
+async def test_full_session_with_a_reconnect(
+    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
+) -> None:
+    client.set_running(True)
+    clock[0] = 200.0
+    client.drop()
+    clock[0] = 210.0
+    await toothbrush.connect()
+    clock[0] = 400.2
+    client.set_running(False)
+
+    session = toothbrush.last_session
+    assert session is not None
+    assert session.duration == 300
+
+
+async def test_merged_sessions_are_recorded_from_the_latest_reconnect(
+    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
+) -> None:
+    client.set_running(True)
+    clock[0] = 110.0
+    client.drop()
+    clock[0] = 120.0
+    await toothbrush.connect()
+    clock[0] = 130.0
+    client.drop()
+    clock[0] = 140.0
+    await toothbrush.connect()
+    clock[0] = 420.0
+    client.set_running(False)
+
+    session = toothbrush.last_session
+    assert session is not None
+    assert session.duration == 280
+
+
+async def test_session_continues_after_the_longest_gap(
+    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
+) -> None:
+    client.set_running(True)
+    clock[0] = 160.0
+    client.drop()
+    clock[0] = 220.0
+    await toothbrush.connect()
+    clock[0] = 230.0
+    client.set_running(False)
+
+    session = toothbrush.last_session
+    assert session is not None
+    assert session.duration == 130
+
+
 async def test_session_is_not_continued_beyond_the_brushing_time(
     toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
 ) -> None:

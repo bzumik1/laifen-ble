@@ -23,6 +23,7 @@ from .const import (
     MAX_BRUSHING_TIME,
     MAX_SESSION_GAP,
     MIN_SESSION_DURATION,
+    SESSION_TIME_TOLERANCE,
     STATE_TIMEOUT,
 )
 from .exceptions import (
@@ -449,7 +450,10 @@ class LaifenToothbrush:
         self._run = None
         now = monotonic()
         started, started_at = run.started, run.started_at
-        if run.resumed is not None and now - started > MAX_BRUSHING_TIME:
+        if (
+            run.resumed is not None
+            and now - started > MAX_BRUSHING_TIME + SESSION_TIME_TOLERANCE
+        ):
             started, started_at = run.resumed
         duration = now - started
         if duration >= MIN_SESSION_DURATION:
