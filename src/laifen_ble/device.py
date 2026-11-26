@@ -20,6 +20,7 @@ from bleak_retry_connector import (
 from .const import (
     CHARACTERISTIC_UUID,
     COMMAND_TIMEOUT,
+    MAX_BRUSHING_TIME,
     MAX_SESSION_GAP,
     MIN_SESSION_DURATION,
     STATE_TIMEOUT,
@@ -428,12 +429,16 @@ class LaifenToothbrush:
     def _start_session(self) -> None:
         interrupted = self._interrupted_session
         self._interrupted_session = None
-        if interrupted is None:
-            self._session_start = (monotonic(), datetime.now(UTC))
-        elif monotonic() - interrupted[1] <= MAX_SESSION_GAP:
-            self._session_start = interrupted[0]
-        else:
-            self._awaiting_stop = True
+        now = monotonic()
+        if interrupted is not None:
+            session_start, interrupted_at = interrupted
+            if now - interrupted_at <= MAX_SESSION_GAP:
+                self._session_start = session_start
+                return
+            if now - session_start[0] <= MAX_BRUSHING_TIME + MAX_SESSION_GAP:
+                self._awaiting_stop = True
+                return
+        self._session_start = (now, datetime.now(UTC))
 
     def _finish_session(self) -> None:
         if self._session_start is None:

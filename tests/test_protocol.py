@@ -229,6 +229,12 @@ def test_strength_limits() -> None:
     assert Mode.HIGH_FREQUENCY.strength_limits == (11, 20)
 
 
+def test_state_is_hashable() -> None:
+    state = decode_state(decode_frame(STATE_FRAME).payload)
+
+    assert hash(state) == hash(decode_state(decode_frame(STATE_FRAME).payload))
+
+
 def test_decode_state_battery_out_of_range() -> None:
     payload = bytearray(decode_frame(STATE_FRAME).payload)
     payload[14] = 0xFF

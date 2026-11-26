@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntEnum
 
@@ -42,7 +42,7 @@ class ModeSettings:
 @dataclass(frozen=True, slots=True)
 class LaifenState:
     mode: Mode
-    mode_settings: Mapping[Mode, ModeSettings]
+    mode_settings: Mapping[Mode, ModeSettings] = field(hash=False)
     airplane_mode: bool
     battery_level: int | None
     reminder_30s: bool

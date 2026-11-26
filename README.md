@@ -14,7 +14,7 @@ intended to be used by the Home Assistant `laifen` integration.
 
 | Model | Advertised name | Status |
 |---|---|---|
-| Laifen Wave (tested with the stainless steel version) | `LFTB01-P-xxxx` | Supported |
+| Laifen Wave (tested with firmware V2.0.93) | `LFTB01-P-xxxx` | Supported |
 | Other Laifen models | other names | Not supported |
 
 ## Usage
@@ -51,9 +51,25 @@ changes. Every command waits for the acknowledgement of the toothbrush and reads
 The battery level is not pushed, so call `update()` to read the state again, for example while
 the toothbrush stays awake on its charger.
 
+`state.battery_level` is `None` when the toothbrush reports a value above 100.
+
 A brushing session is a period in which the motor runs for at least five seconds; the short
 vibrations that confirm button presses are ignored. `last_session` holds the start time and
-duration of the last completed session.
+duration of the last completed session. When the connection drops while the motor runs, the
+session continues if the toothbrush is connected again within a minute and still runs. Otherwise
+the interrupted session is dropped, so a session is never recorded with a wrong duration.
+
+## Errors
+
+- `LaifenConnectionError`: the toothbrush could not be reached, the connection dropped, or it
+  did not answer in time.
+- `UnsupportedStateError`: raised by `connect()` when the toothbrush reports its state in a
+  layout this library does not know.
+- `LaifenValueError`: a value is outside what the toothbrush accepts in its current state.
+- `LaifenCommandError`: the toothbrush refused a command. `LaifenMotorError.reason` tells why it
+  refused to start or stop the motor, for example because it is charging.
+
+All of them derive from `LaifenError`.
 
 ## Protocol
 

@@ -927,6 +927,47 @@ async def test_session_is_not_recorded_after_a_long_gap(
     assert session.duration == 80
 
 
+async def test_new_session_after_an_unseen_stop(
+    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
+) -> None:
+    client.set_running(True)
+    clock[0] = 160.0
+    client.drop()
+    clock[0] = 43_300.0
+    await toothbrush.connect()
+    clock[0] = 43_420.0
+    client.set_running(False)
+
+    session = toothbrush.last_session
+    assert session is not None
+    assert session.duration == 120
+
+
+async def test_frames_of_a_previous_client_are_ignored(
+    toothbrush: LaifenToothbrush, client: FakeClient, establish: AsyncMock
+) -> None:
+    previous_notify = client.notify_callback
+    assert previous_notify is not None
+    client.drop()
+    new_client = FakeClient()
+
+    async def establish_new_client(*_args: Any, **kwargs: Any) -> FakeClient:
+        new_client.disconnected_callback = kwargs["disconnected_callback"]
+        return new_client
+
+    establish.side_effect = establish_new_client
+    await toothbrush.connect()
+    state = toothbrush.state
+    running = bytearray(client.payload)
+    running[19] = 0x01
+
+    previous_notify(
+        MagicMock(), bytearray(encode_frame(Command.STATE, Kind.REPORT, bytes(running)))
+    )
+
+    assert toothbrush.state is state
+
+
 async def test_late_state_while_disconnecting_is_ignored(
     toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
 ) -> None:
