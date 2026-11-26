@@ -127,6 +127,8 @@ class LaifenToothbrush:
                     CHARACTERISTIC_UUID, READ_VERSION, response=True
                 )
                 await self._read_state(client, STATE_TIMEOUT)
+                if not client.is_connected:
+                    raise LaifenConnectionError(f"{self.name} disconnected")
             except BaseException as err:
                 self._pending_client = None
                 await self._disconnect(client)
@@ -314,7 +316,7 @@ class LaifenToothbrush:
     async def _disconnect(self, client: BleakClientWithServiceCache) -> None:
         try:
             await client.disconnect()
-        except BleakError as err:
+        except (BleakError, TimeoutError) as err:
             _LOGGER.debug("%s: Error while disconnecting: %s", self.name, err)
 
     def _handle_disconnect(self, client: BleakClientWithServiceCache) -> None:
@@ -357,11 +359,14 @@ class LaifenToothbrush:
         if frame.command == Command.STATE:
             try:
                 state = decode_state(frame.payload)
-            except UnsupportedStateError as err:
-                self._fail_state_waiters(err)
-                return
             except InvalidFrameError as err:
-                _LOGGER.debug("%s: Ignoring state: %s", self.name, err)
+                if (
+                    isinstance(err, UnsupportedStateError)
+                    and self._pending_client is not None
+                ):
+                    self._fail_state_waiters(err)
+                else:
+                    _LOGGER.debug("%s: Ignoring state: %s", self.name, err)
                 return
             self._track_session(state.running)
             self._state = state

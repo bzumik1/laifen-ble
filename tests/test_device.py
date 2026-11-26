@@ -219,17 +219,57 @@ async def test_connect_state_timeout(
     client.disconnect.assert_awaited_once()
 
 
+@pytest.mark.parametrize("error", [BleakError("gone"), TimeoutError()])
 async def test_connect_disconnect_error_is_ignored(
-    ble_device: BLEDevice, client: FakeClient, establish: AsyncMock
+    ble_device: BLEDevice, client: FakeClient, establish: AsyncMock, error: Exception
 ) -> None:
     client.answer_state = False
-    client.disconnect.side_effect = BleakError("gone")
+    client.disconnect.side_effect = error
     toothbrush = LaifenToothbrush(ble_device)
 
     with pytest.raises(LaifenConnectionError):
         await toothbrush.connect()
 
     assert not toothbrush.connected
+
+
+async def test_disconnect_timeout_is_ignored(
+    toothbrush: LaifenToothbrush, client: FakeClient
+) -> None:
+    client.disconnect.side_effect = TimeoutError
+
+    await toothbrush.disconnect()
+
+    assert not toothbrush.connected
+
+
+async def test_connect_link_drops_after_state(
+    ble_device: BLEDevice, client: FakeClient, establish: AsyncMock
+) -> None:
+    async def answer_then_drop(_uuid: str, data: bytes, response: bool) -> None:
+        if data == READ_STATE:
+            client.notify_state()
+            client.drop()
+
+    client.write_gatt_char.side_effect = answer_then_drop
+    toothbrush = LaifenToothbrush(ble_device)
+
+    with pytest.raises(LaifenConnectionError):
+        await toothbrush.connect()
+
+    assert not toothbrush.connected
+
+
+async def test_unsupported_state_while_connected(
+    toothbrush: LaifenToothbrush, client: FakeClient
+) -> None:
+    state = toothbrush.state
+    client.payload = bytearray(STATE_PAYLOAD[:15])
+
+    with pytest.raises(LaifenConnectionError):
+        await toothbrush.update()
+
+    assert toothbrush.state is state
 
 
 async def test_pushed_state_updates(
