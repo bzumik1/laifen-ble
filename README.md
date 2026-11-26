@@ -3,8 +3,8 @@
 Async Bluetooth LE library for the **Laifen Wave** electric toothbrush (`LFTB01-P`).
 
 It reads the toothbrush state (active mode, per-mode settings, battery level, brushing time,
-running state and feature flags) and its firmware version. It is built on
-[bleak](https://github.com/hbldh/bleak) and
+running state and feature flags) and, when its format is known, the firmware version. It is
+built on [bleak](https://github.com/hbldh/bleak) and
 [bleak-retry-connector](https://github.com/Bluetooth-Devices/bleak-retry-connector) and is
 intended to be used by the Home Assistant `laifen` integration.
 
