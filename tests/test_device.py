@@ -335,6 +335,25 @@ async def test_stuck_write_times_out(
             await getattr(toothbrush, method)(*args)
 
 
+async def test_stuck_notify_times_out(
+    ble_device: BLEDevice, client: FakeClient, establish: AsyncMock
+) -> None:
+    async def never_answer(
+        _uuid: str, callback: Callable[[Any, bytearray], None]
+    ) -> None:
+        await asyncio.Event().wait()
+
+    client.start_notify.side_effect = never_answer
+    toothbrush = LaifenToothbrush(ble_device)
+
+    with pytest.raises(LaifenConnectionError):
+        async with asyncio.timeout(1):
+            await toothbrush.connect()
+
+    assert not toothbrush.connected
+    client.disconnect.assert_awaited_once()
+
+
 async def test_failed_connect_does_not_keep_a_session(
     ble_device: BLEDevice, client: FakeClient, establish: AsyncMock
 ) -> None:

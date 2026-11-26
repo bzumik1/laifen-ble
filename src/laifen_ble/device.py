@@ -123,12 +123,13 @@ class LaifenToothbrush:
             client = await self._open(ble_device)
             self._pending_client = client
             try:
-                await client.start_notify(
-                    CHARACTERISTIC_UUID, self._handle_notification
-                )
-                await client.write_gatt_char(
-                    CHARACTERISTIC_UUID, READ_VERSION, response=True
-                )
+                async with asyncio.timeout(COMMAND_TIMEOUT):
+                    await client.start_notify(
+                        CHARACTERISTIC_UUID, self._handle_notification
+                    )
+                    await client.write_gatt_char(
+                        CHARACTERISTIC_UUID, READ_VERSION, response=True
+                    )
                 await self._read_state(client, STATE_TIMEOUT)
                 if not client.is_connected:
                     raise LaifenConnectionError(f"{self.name} disconnected")
