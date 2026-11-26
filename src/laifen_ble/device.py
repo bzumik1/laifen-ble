@@ -110,18 +110,17 @@ class LaifenToothbrush:
             ble_device = self._ble_device
             if ble_device is None:
                 raise LaifenConnectionError(f"{self.name} has not been seen yet")
-            try:
-                client = await establish_connection(
-                    BleakClientWithServiceCache,
-                    ble_device,
-                    self.name,
-                    disconnected_callback=self._handle_disconnect,
-                    ble_device_callback=lambda: self._ble_device or ble_device,
-                )
-            except (BleakError, TimeoutError) as err:
-                raise LaifenConnectionError(
-                    f"Failed to connect to {self.name}: {err}"
-                ) from err
+            client = await self._establish_connection(ble_device, True)
+            if client.services.get_characteristic(CHARACTERISTIC_UUID) is None:
+                _LOGGER.debug("%s: Cached services are stale, discovering", self.name)
+                await client.clear_cache()
+                await self._disconnect(client)
+                client = await self._establish_connection(ble_device, False)
+                if client.services.get_characteristic(CHARACTERISTIC_UUID) is None:
+                    await self._disconnect(client)
+                    raise LaifenConnectionError(
+                        f"{self.name} does not offer {CHARACTERISTIC_UUID}"
+                    )
             self._client = client
             self._state_received.clear()
             try:
@@ -143,6 +142,23 @@ class LaifenToothbrush:
     async def disconnect(self) -> None:
         async with self._connect_lock:
             await self._disconnect_client()
+
+    async def _establish_connection(
+        self, ble_device: BLEDevice, use_services_cache: bool
+    ) -> BleakClientWithServiceCache:
+        try:
+            return await establish_connection(
+                BleakClientWithServiceCache,
+                ble_device,
+                self.name,
+                disconnected_callback=self._handle_disconnect,
+                ble_device_callback=lambda: self._ble_device or ble_device,
+                use_services_cache=use_services_cache,
+            )
+        except (BleakError, TimeoutError) as err:
+            raise LaifenConnectionError(
+                f"Failed to connect to {self.name}: {err}"
+            ) from err
 
     async def set_mode(self, mode: Mode) -> None:
         state = self._connected_state()
@@ -241,8 +257,10 @@ class LaifenToothbrush:
         client = self._client
         self._client = None
         self._session_start = None
-        if client is None:
-            return
+        if client is not None:
+            await self._disconnect(client)
+
+    async def _disconnect(self, client: BleakClientWithServiceCache) -> None:
         try:
             await client.disconnect()
         except BleakError as err:

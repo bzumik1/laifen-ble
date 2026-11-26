@@ -36,12 +36,22 @@ class FakeClient:
         self.acknowledge = True
         self.acknowledgement_payload: bytes | None = None
         self.status = 0x00
+        self.stale_services = 0
         self.written: list[bytes] = []
+        self.clear_cache = AsyncMock(return_value=True)
         self.notify_callback: Callable[[Any, bytearray], None] | None = None
         self.disconnected_callback: Callable[[Any], None] | None = None
         self.start_notify = AsyncMock(side_effect=self._start_notify)
         self.write_gatt_char = AsyncMock(side_effect=self._write)
         self.disconnect = AsyncMock(side_effect=self._disconnect)
+
+    @property
+    def services(self) -> MagicMock:
+        services = MagicMock()
+        if self.stale_services:
+            self.stale_services -= 1
+            services.get_characteristic.return_value = None
+        return services
 
     async def _start_notify(
         self, _uuid: str, callback: Callable[[Any, bytearray], None]
@@ -122,6 +132,7 @@ def client() -> FakeClient:
 def establish(client: FakeClient) -> Generator[AsyncMock]:
     async def _establish(*_args: Any, **kwargs: Any) -> FakeClient:
         client.disconnected_callback = kwargs["disconnected_callback"]
+        client.is_connected = True
         return client
 
     with patch(
@@ -617,3 +628,32 @@ async def test_update_errors(toothbrush: LaifenToothbrush, client: FakeClient) -
     client.is_connected = False
     with pytest.raises(LaifenConnectionError):
         await toothbrush.update()
+
+
+async def test_connect_with_stale_services(
+    ble_device: BLEDevice, client: FakeClient, establish: AsyncMock
+) -> None:
+    client.stale_services = 1
+    toothbrush = LaifenToothbrush(ble_device)
+
+    await toothbrush.connect()
+
+    assert toothbrush.connected
+    client.clear_cache.assert_awaited_once()
+    assert [call.kwargs["use_services_cache"] for call in establish.call_args_list] == [
+        True,
+        False,
+    ]
+
+
+async def test_connect_without_characteristic(
+    ble_device: BLEDevice, client: FakeClient, establish: AsyncMock
+) -> None:
+    client.stale_services = 2
+    toothbrush = LaifenToothbrush(ble_device)
+
+    with pytest.raises(LaifenConnectionError):
+        await toothbrush.connect()
+
+    assert not toothbrush.connected
+    assert client.disconnect.await_count == 2
