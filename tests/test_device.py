@@ -193,6 +193,7 @@ async def test_connect_reads_state(
     assert toothbrush.state.battery_level == 93
     assert toothbrush.state.mode is Mode.MODE_1
     assert toothbrush.last_session is None
+    assert toothbrush.current_session is None
     assert client.written == [READ_VERSION, READ_STATE]
     client.write_gatt_char.assert_awaited_with(
         CHARACTERISTIC_UUID, READ_STATE, response=True
@@ -832,6 +833,53 @@ async def test_brushing_session(
     assert session.duration == 60
     assert isinstance(session.started_at, datetime)
     assert session.started_at.tzinfo is not None
+
+
+async def test_current_session(
+    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
+) -> None:
+    client.set_running(True)
+    clock[0] = 104.9
+    assert toothbrush.current_session is None
+
+    clock[0] = 105.0
+    session = toothbrush.current_session
+    assert session is not None
+    assert session.duration == 5
+
+    clock[0] = 160.4
+    assert toothbrush.current_session == BrushingSession(
+        started_at=session.started_at, duration=60
+    )
+
+    client.set_running(False)
+
+    assert toothbrush.current_session is None
+    assert toothbrush.last_session == BrushingSession(
+        started_at=session.started_at, duration=60
+    )
+
+
+async def test_current_session_across_a_reconnect(
+    toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
+) -> None:
+    client.set_running(True)
+    clock[0] = 200.0
+    client.drop()
+
+    assert toothbrush.current_session is None
+
+    clock[0] = 210.0
+    await toothbrush.connect()
+    clock[0] = 405.0
+    session = toothbrush.current_session
+    assert session is not None
+    assert session.duration == 305
+
+    clock[0] = 405.1
+    session = toothbrush.current_session
+    assert session is not None
+    assert session.duration == 195
 
 
 async def test_short_run_is_not_a_session(
