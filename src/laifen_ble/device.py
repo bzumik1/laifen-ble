@@ -117,7 +117,8 @@ class LaifenToothbrush:
     def current_session(self) -> BrushingSession | None:
         if self._run is None:
             return None
-        return _session(self._run)
+        started_at, duration = _elapsed(self._run)
+        return BrushingSession(started_at=started_at, duration=round(duration))
 
     def set_ble_device(self, ble_device: BLEDevice) -> None:
         self._ble_device = ble_device
@@ -454,8 +455,11 @@ class LaifenToothbrush:
         if run is None:
             return
         self._run = None
-        if (session := _session(run)) is not None:
-            self._last_session = session
+        started_at, duration = _elapsed(run)
+        if duration >= MIN_SESSION_DURATION:
+            self._last_session = BrushingSession(
+                started_at=started_at, duration=round(duration)
+            )
 
     def _interrupt_session(self) -> None:
         if self._run is not None:
@@ -467,7 +471,7 @@ class LaifenToothbrush:
             callback()
 
 
-def _session(run: _Run) -> BrushingSession | None:
+def _elapsed(run: _Run) -> tuple[datetime, float]:
     now = monotonic()
     started, started_at = run.started, run.started_at
     if (
@@ -475,10 +479,7 @@ def _session(run: _Run) -> BrushingSession | None:
         and now - started > MAX_BRUSHING_TIME + SESSION_TIME_TOLERANCE
     ):
         started, started_at = run.resumed
-    duration = now - started
-    if duration < MIN_SESSION_DURATION:
-        return None
-    return BrushingSession(started_at=started_at, duration=round(duration))
+    return started_at, now - started
 
 
 def _retrieve_exception(future: asyncio.Future[Any]) -> None:

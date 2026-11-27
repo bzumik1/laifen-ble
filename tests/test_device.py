@@ -839,13 +839,14 @@ async def test_current_session(
     toothbrush: LaifenToothbrush, client: FakeClient, clock: list[float]
 ) -> None:
     client.set_running(True)
-    clock[0] = 104.9
-    assert toothbrush.current_session is None
-
-    clock[0] = 105.0
     session = toothbrush.current_session
     assert session is not None
-    assert session.duration == 5
+    assert session.duration == 0
+
+    clock[0] = 102.4
+    assert toothbrush.current_session == BrushingSession(
+        started_at=session.started_at, duration=2
+    )
 
     clock[0] = 160.4
     assert toothbrush.current_session == BrushingSession(

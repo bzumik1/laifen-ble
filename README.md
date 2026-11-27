@@ -56,9 +56,10 @@ disconnect, `state` keeps the last state received, so check `connected` before r
 
 A brushing session is a period in which the motor runs for at least five seconds; the short
 vibrations that confirm button presses are ignored. `last_session` holds the start time and
-duration of the last completed session. `current_session` holds the session in progress, with its
-duration up to now, once the motor has run for five seconds. Read it again to follow the duration,
-because the toothbrush does not push it. Sessions are measured while the toothbrush is connected:
+duration of the last completed session. `current_session` holds the run of the motor in progress,
+with its duration up to now, and becomes `last_session` when it lasts at least five seconds. Read it
+again to follow the duration, because the toothbrush does not push it. Sessions are measured while
+the toothbrush is connected:
 
 - A session that was already running when the toothbrush was connected starts at the moment of
   the connection.
